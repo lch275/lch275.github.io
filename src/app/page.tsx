@@ -64,8 +64,8 @@ export default async function Home() {
               // 각 포스트를 카드 형식으로 표시
               <article key={post.slug} className="group">
                 <Link href={`/posts/${post.slug}`} className="block">
-                  {/* 카드 컨테이너 - 반응형 호버 효과와 그림자 */}
-                  <div className="bg-white rounded-lg shadow-md hover:shadow-lg transition-all duration-200 overflow-hidden border border-gray-200 h-full">
+                  {/* 카드 컨테이너 - 반응형 호버 효과와 그림자, 반응형 높이 (최소 250px) */}
+                  <div className="bg-white rounded-lg shadow-md hover:shadow-lg transition-all duration-200 overflow-hidden border border-gray-200 h-[250px] sm:h-[280px] md:h-[300px] lg:h-[320px] xl:h-[350px] flex flex-col">
                     
                     {/* 썸네일 영역 - 카테고리별 색상으로 구분, 반응형 크기 */}
                     <div className={`aspect-video flex items-center justify-center ${
@@ -81,15 +81,15 @@ export default async function Home() {
                       </div>
                     </div>
                     
-                    {/* 카드 콘텐츠 영역 - 반응형 패딩 */}
-                    <div className="p-3 sm:p-4 flex flex-col h-[calc(100%-theme(spacing.32))]">
+                    {/* 카드 콘텐츠 영역 - 반응형 패딩, flex-1로 남은 공간 차지 */}
+                    <div className="p-3 sm:p-4 flex flex-col flex-1">
                       {/* 포스트 제목 - 반응형 텍스트 크기, 2줄까지만 표시 */}
                       <h3 className="font-semibold text-2xl sm:text-3xl text-gray-900 group-hover:text-blue-600 transition-colors line-clamp-2 mb-2 flex-grow-0">
                         {post.frontMatter.title}
                       </h3>
                       
-                      {/* 포스트 요약 - 반응형 텍스트, 2줄까지만 표시 */}
-                      <p className="text-gray-600 text-lg sm:text-xl line-clamp-2 mb-3 overflow-hidden">
+                      {/* 포스트 요약 - 반응형 텍스트, flex-1로 공간 확보 */}
+                      <p className="text-gray-600 text-lg sm:text-xl mb-3 flex-1">
                         {post.frontMatter.description || "이 포스트에 대한 간단한 설명을 확인해보세요."}
                       </p>
                       
