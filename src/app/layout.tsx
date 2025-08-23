@@ -24,6 +24,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "ARCHIEVE - 주니어 개발자 기술 블로그",
   description: "개인 IT 관련 기술 학습 및 트러블슈팅의 경험을 공유하는 개발자 블로그입니다. 프론트엔드, 백엔드, 인프라 등 다양한 기술 분야의 실무 경험과 문제 해결 과정을 기록합니다.",
+  verification: {
+    google: "zgQ64xU6IrOcuDIz8oXAiBoILR011ixm2SIHOC5iQmQ"
+  }
 };
 
 // 루트 레이아웃 컴포넌트 - 모든 페이지의 공통 구조를 제공
