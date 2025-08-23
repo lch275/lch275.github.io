@@ -1,0 +1,125 @@
+---
+title: TypeScript 시작하기
+createdAt: 2024-09-10
+updatedAt: 2024-09-10
+description: JavaScript 개발자를 위한 TypeScript 입문 가이드입니다.
+category: etc
+tags:
+  - typescript
+  - javascript
+  - tutorial
+---
+
+# TypeScript 시작하기
+
+JavaScript에서 TypeScript로 전환을 고려하고 있다면, 이 가이드가 도움이 될 것입니다.
+
+## 1. TypeScript가 필요한 이유
+
+### 타입 안정성
+```ts
+// JavaScript - 런타임 에러 발생 가능
+function greet(name) {
+  return "Hello, " + name.toUpperCase();
+}
+
+greet(123); // 런타임 에러!
+
+// TypeScript - 컴파일 타임에 에러 감지
+function greet(name: string): string {
+  return "Hello, " + name.toUpperCase();
+}
+
+greet(123); // 컴파일 에러! ✅
+```
+
+## 2. 기본 타입들
+
+```ts
+// 기본 타입
+let isDone: boolean = false;
+let count: number = 42;
+let username: string = "TypeScript";
+let items: string[] = ["apple", "banana"];
+let coordinates: [number, number] = [10, 20];
+
+// 객체 타입
+interface User {
+  id: number;
+  name: string;
+  email?: string; // 선택적 속성
+}
+
+const user: User = {
+  id: 1,
+  name: "John Doe"
+};
+```
+
+## 3. 고급 타입 기능
+
+### Union Types
+```ts
+type Status = "pending" | "approved" | "rejected";
+
+function updateStatus(status: Status) {
+  console.log(`Status updated to: ${status}`);
+}
+```
+
+### Generic Types
+```ts
+function identity<T>(arg: T): T {
+  return arg;
+}
+
+const stringResult = identity<string>("hello");
+const numberResult = identity<number>(42);
+```
+
+## 4. 실용적인 예제
+
+### API 응답 타입 정의
+```ts
+interface ApiResponse<T> {
+  data: T;
+  message: string;
+  success: boolean;
+}
+
+interface Post {
+  id: number;
+  title: string;
+  content: string;
+  authorId: number;
+}
+
+async function fetchPost(id: number): Promise<ApiResponse<Post>> {
+  const response = await fetch(`/api/posts/${id}`);
+  return response.json();
+}
+```
+
+## 5. 설정과 도구
+
+### tsconfig.json 기본 설정
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules"]
+}
+```
+
+> **추천**: TypeScript를 처음 도입할 때는 `strict: false`로 시작해서 점진적으로 엄격한 모드로 전환하는 것이 좋습니다.
+

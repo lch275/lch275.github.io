@@ -1,0 +1,201 @@
+---
+title: Docker와 Kubernetes 실전 가이드
+createdAt: 2024-10-15
+updatedAt: 2024-12-10
+description: Docker 컨테이너화부터 Kubernetes 오케스트레이션까지, 실무에서 바로 활용할 수 있는 가이드입니다.
+category: infra
+tags:
+  - docker
+  - kubernetes
+  - devops
+  - containerization
+---
+
+## Docker와 Kubernetes 실전 가이드
+
+컨테이너 기술의 핵심인 Docker와 Kubernetes를 실무에서 효과적으로 활용하는 방법을 알아보겠습니다.
+
+## 1. Docker 기초부터 실전까지
+
+### 효율적인 Dockerfile 작성
+
+```dockerfile
+# 멀티 스테이지 빌드 활용
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+
+FROM node:18-alpine AS runtime
+
+# 보안을 위한 non-root 사용자 생성
+RUN addgroup -g 1001 -S nodejs
+RUN adduser -S nextjs -u 1001
+
+WORKDIR /app
+
+# 빌드 스테이지에서 의존성 복사
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
+COPY --chown=nextjs:nodejs . .
+
+USER nextjs
+
+EXPOSE 3000
+CMD ["npm", "start"]
+```
+
+### Docker Compose로 개발 환경 구성
+
+```yaml
+version: '3.8'
+
+services:
+  web:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - .:/app
+      - /app/node_modules
+    depends_on:
+      - db
+      - redis
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: myapp
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:
+```
+
+## 2. Kubernetes 실전 배포
+
+### 애플리케이션 배포 매니페스트
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  labels:
+    app: web-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      containers:
+      - name: web
+        image: myapp:latest
+        ports:
+        - containerPort: 3000
+        env:
+        - name: NODE_ENV
+          value: "production"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-app-service
+spec:
+  selector:
+    app: web-app
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 3000
+  type: ClusterIP
+```
+
+## 3. 모니터링과 로깅
+
+### Prometheus와 Grafana 설정
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+    - job_name: 'kubernetes-pods'
+      kubernetes_sd_configs:
+      - role: pod
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+```
+
+## 4. CI/CD 파이프라인
+
+GitHub Actions를 활용한 자동 배포:
+
+```yaml
+name: Deploy to Kubernetes
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Build Docker image
+      run: |
+        docker build -t ${{ secrets.REGISTRY }}/myapp:${{ github.sha }} .
+        docker push ${{ secrets.REGISTRY }}/myapp:${{ github.sha }}
+    
+    - name: Deploy to Kubernetes
+      run: |
+        kubectl set image deployment/web-app web=${{ secrets.REGISTRY }}/myapp:${{ github.sha }}
+        kubectl rollout status deployment/web-app
+```
+
+> **팁**: 프로덕션 환경에서는 반드시 리소스 제한, 헬스 체크, 시크릿 관리를 적절히 설정하세요. 보안과 안정성이 최우선입니다.

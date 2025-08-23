@@ -1,0 +1,114 @@
+---
+title: Node.js 성능 최적화 팁
+createdAt: 2024-11-20
+updatedAt: 2024-11-20
+description: Node.js 애플리케이션의 성능을 향상시키는 다양한 기법들을 소개합니다.
+category: backend
+tags:
+  - nodejs
+  - performance
+  - optimization
+---
+
+# Node.js 성능 최적화 팁
+
+Node.js 애플리케이션의 성능을 크게 향상시킬 수 있는 실용적인 팁들을 알아보겠습니다.
+
+## 1. 이벤트 루프 최적화
+
+### 블로킹 작업 피하기
+CPU 집약적인 작업은 워커 스레드를 사용하세요.
+
+```js
+const { Worker, isMainThread, parentPort } = require('worker_threads');
+
+if (isMainThread) {
+  // 메인 스레드
+  const worker = new Worker(__filename);
+  worker.postMessage({ numbers: [1, 2, 3, 4, 5] });
+  
+  worker.on('message', (result) => {
+    console.log('계산 결과:', result);
+  });
+} else {
+  // 워커 스레드
+  parentPort.on('message', ({ numbers }) => {
+    const result = numbers.reduce((sum, num) => sum + num * num, 0);
+    parentPort.postMessage(result);
+  });
+}
+```
+
+## 2. 메모리 관리
+
+### 메모리 누수 방지
+- 이벤트 리스너 정리
+- 타이머 해제
+- 스트림 적절히 종료
+
+```js
+class DataProcessor {
+  constructor() {
+    this.timer = setInterval(this.process.bind(this), 1000);
+  }
+  
+  destroy() {
+    clearInterval(this.timer);
+    this.timer = null;
+  }
+  
+  process() {
+    // 데이터 처리 로직
+  }
+}
+```
+
+## 3. 데이터베이스 최적화
+
+### 연결 풀 사용
+```js
+const mysql = require('mysql2/promise');
+
+const pool = mysql.createPool({
+  host: 'localhost',
+  user: 'root',
+  password: 'password',
+  database: 'mydb',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
+
+async function getUser(id) {
+  const [rows] = await pool.execute('SELECT * FROM users WHERE id = ?', [id]);
+  return rows[0];
+}
+```
+
+## 4. 캐싱 전략
+
+Redis를 활용한 효과적인 캐싱:
+
+```js
+const redis = require('redis');
+const client = redis.createClient();
+
+async function getCachedData(key, fetchFunction) {
+  try {
+    const cached = await client.get(key);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+    
+    const data = await fetchFunction();
+    await client.setex(key, 3600, JSON.stringify(data)); // 1시간 캐시
+    return data;
+  } catch (error) {
+    console.error('캐시 오류:', error);
+    return await fetchFunction(); // 캐시 실패 시 원본 데이터 반환
+  }
+}
+```
+
+> **주의**: 성능 최적화는 측정 가능한 지표를 기반으로 진행하세요. 프로파일링 도구를 활용하여 병목 지점을 정확히 파악하는 것이 중요합니다.
+
