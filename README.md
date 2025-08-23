@@ -8,7 +8,7 @@ First, run the development server:
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open [https://lch275.github.io](https://lch275.github.io) in your browser.
 
 Place posts in `src/content/*.mdx` with this frontmatter:
 
@@ -41,3 +41,9 @@ Static files are generated in `out/`.
    - Publish `web/out` to Pages
 
 For user/org sites like `yourname.github.io`, no basePath is added.
+
+### POST TODO List
+
+- [ ] JVM의 동작 원리 분석 및 이해
+- [ ] Spring Batch 가이드
+- [ ] Spring Security 동작 원리
