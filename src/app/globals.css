@@ -21,7 +21,7 @@ html {
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
-    --foreground: #ededed;
+    --foreground: #ffffff;
   }
 }
 
@@ -34,6 +34,29 @@ body {
 
 .prose h1, .prose h2, .prose h3, .prose h4 {
   scroll-margin-top: 96px;
+}
+
+/* 다크모드에서 prose 요소들의 텍스트를 흰색으로 설정 */
+@media (prefers-color-scheme: dark) {
+  .prose {
+    color: #ffffff !important;
+  }
+  
+  .prose h1, .prose h2, .prose h3, .prose h4, .prose h5, .prose h6 {
+    color: #ffffff !important;
+  }
+  
+  .prose p, .prose li, .prose blockquote {
+    color: #ffffff !important;
+  }
+  
+  .prose strong, .prose em {
+    color: #ffffff !important;
+  }
+  
+  .prose code {
+    color: #ffffff !important;
+  }
 }
 
 /* 반응형 스크롤바 숨김 스타일 */
