@@ -13,7 +13,7 @@ export default async function CategoriesPage() {
   
   return (
     // 홈페이지와 동일한 레이아웃 패턴 - 일관된 사용자 경험 제공
-    <main className="mx-auto max-w-3xl px-6 py-12">
+    <main className="mx-auto max-w-sm sm:max-w-2xl md:max-w-5xl lg:max-w-full xl:max-w-full px-4 sm:px-6 lg:px-12 xl:px-16 py-8 sm:py-12">
       {/* 페이지 제목 - 명확한 페이지 목적 전달 */}
       <h1 className="text-5xl font-bold mb-6">카테고리</h1>
       

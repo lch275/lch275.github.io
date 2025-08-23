@@ -48,8 +48,8 @@ export default async function PostPage({ params }: PageProps) {
     return (
       // Tailwind Typography 플러그인을 사용한 article 스타일링
       // prose 클래스로 타이포그래피 기본 스타일 적용
-      // dark:prose-invert로 다크모드 지원
-      <article className="prose prose-zinc dark:prose-invert mx-auto max-w-3xl px-6 py-12">
+      // 다른 페이지들과 일관된 레이아웃으로 데스크톱에서 더 넓게
+      <article className="prose prose-zinc dark:prose-invert mx-auto max-w-sm sm:max-w-2xl md:max-w-5xl lg:max-w-full xl:max-w-full px-4 sm:px-6 lg:px-12 xl:px-16 py-8 sm:py-12">
         {/* 포스트 제목 - h1 태그로 의미적 구조 제공 */}
         <h1>{post.frontMatter.title}</h1>
         

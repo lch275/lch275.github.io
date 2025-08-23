@@ -18,9 +18,9 @@ export default async function Home() {
   const categoryOrder = ["frontend", "backend", "infra", "etc"] as const;
   
   return (
-    // 반응형 레이아웃 - 기기별 최적화된 너비와 패딩 적용
-    // 모바일: 전체 너비, 태블릿: 최대 5xl, 데스크톱: 최대 7xl
-    <main className="mx-auto max-w-sm sm:max-w-2xl md:max-w-4xl lg:max-w-6xl xl:max-w-7xl px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
+    // 반응형 레이아웃 - 데스크톱에서 더 넓은 레이아웃으로 카드 확대
+    // 모바일: 전체 너비, 태블릿: 최대 5xl, 데스크톱: 최대 전체 너비 활용
+    <main className="mx-auto max-w-sm sm:max-w-2xl md:max-w-5xl lg:max-w-full xl:max-w-full px-4 sm:px-6 lg:px-12 xl:px-16 py-8 sm:py-12">
       {/* 헤더 영역 - 반응형 제목 크기 적용 */}
       <div className="flex items-center justify-center mb-6 sm:mb-8">
         <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-gray-900">ARCHIEVE</h1>
@@ -57,9 +57,9 @@ export default async function Home() {
             <p className="text-xl mt-2">첫 번째 포스트를 작성해보세요!</p>
           </div>
         ) : (
-          // 반응형 그리드로 포스트 카드들 배치
+          // 반응형 그리드로 포스트 카드들 배치 - 데스크톱에서 더 큰 카드
           // 모바일: 1열, 태블릿: 2열, 데스크톱: 3열, 대형 화면: 4열
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 sm:gap-8 lg:gap-10">
             {recentPosts.map((post) => (
               // 각 포스트를 카드 형식으로 표시
               <article key={post.slug} className="group">
