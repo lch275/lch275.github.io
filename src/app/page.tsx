@@ -23,7 +23,9 @@ export default async function Home() {
     <main className="mx-auto max-w-sm sm:max-w-2xl md:max-w-5xl lg:max-w-full xl:max-w-full px-4 sm:px-6 lg:px-12 xl:px-16 py-8 sm:py-12">
       {/* 헤더 영역 - 반응형 제목 크기 적용 */}
       <div className="flex items-center justify-center mb-6 sm:mb-8">
-        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-gray-900">ARCHIEVE</h1>
+        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-gray-900">
+          <Link href="/">ARCHIEVE</Link>
+        </h1>
       </div>
       
       {/* 카테고리 네비게이션 - 반응형 레이아웃과 스크롤 적용 */}
