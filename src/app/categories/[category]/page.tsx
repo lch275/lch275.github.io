@@ -63,7 +63,7 @@ export default async function CategoryPage({ params }: PageProps) {
               <article key={post.slug} className="group">
                 <Link href={`/posts/${post.slug}`} className="block">
                   {/* 카드 컨테이너 - 반응형 호버 효과와 그림자, 반응형 높이 (최소 250px) */}
-                  <div className="bg-white rounded-lg shadow-md hover:shadow-lg transition-all duration-200 overflow-hidden border border-gray-200 h-[250px] sm:h-[280px] md:h-[300px] lg:h-[320px] xl:h-[350px] flex flex-col">
+                  <div className="bg-white rounded-lg shadow-md hover:shadow-lg transition-all duration-200 overflow-hidden border border-gray-200 sm:h-[280px] md:h-[300px] lg:h-[320px] xl:h-[350px] flex flex-col">
                     
                     {/* 썸네일 영역 - 카테고리별 색상으로 구분, 반응형 크기 */}
                     <div className={`aspect-video flex items-center justify-center ${
