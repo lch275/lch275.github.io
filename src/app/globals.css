@@ -36,6 +36,35 @@ body {
   scroll-margin-top: 96px;
 }
 
+/* prose 요소들의 폰트 크기를 브라우저 기본 크기(16px)로 설정 */
+.prose {
+  font-size: 1.6rem; /* 16px equivalent when html font-size is 62.5% */
+}
+
+.prose p, .prose li, .prose blockquote, .prose td, .prose th {
+  font-size: 1.6rem !important;
+}
+
+.prose h1 {
+  font-size: 3.6rem !important; /* 36px */
+}
+
+.prose h2 {
+  font-size: 3rem !important; /* 30px */
+}
+
+.prose h3 {
+  font-size: 2.4rem !important; /* 24px */
+}
+
+.prose h4 {
+  font-size: 2rem !important; /* 20px */
+}
+
+.prose h5, .prose h6 {
+  font-size: 1.8rem !important; /* 18px */
+}
+
 /* 다크모드에서 prose 요소들의 텍스트를 흰색으로 설정 */
 @media (prefers-color-scheme: dark) {
   .prose {
