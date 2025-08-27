@@ -4,6 +4,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import Script from "next/script";
 
 // Geist Sans 폰트를 정의 - 일반 텍스트용 모던한 폰트
 // CSS 변수로 등록하여 전역에서 사용 가능하도록 함
@@ -42,6 +43,31 @@ export default function RootLayout({
       {/* 폰트 CSS 변수와 antialiased 클래스를 body에 적용
           - antialiased: 텍스트 렌더링 품질 향상
           - 두 폰트 변수를 동시에 적용하여 필요에 따라 선택적 사용 가능 */}
+          <head>
+            <Script
+              strategy="afterInteractive"
+              src={`https://www.googletagmanager.com/gtag/js?id=G-GXSPJJDFHV`}
+            />
+            <Script
+              id="google-analytics"
+              strategy="afterInteractive"
+              dangerouslySetInnerHTML={{
+                __html: `window.dataLayer = window.dataLayer || [];
+                function gtag(){dataLayer.push(arguments);}
+                gtag('js', new Date());
+
+                gtag('consent', 'default', {
+                  'ad_storage': 'denied',
+                  'ad_user_data': 'denied',
+                  'ad_personalization': 'denied',
+                  'analytics_storage': 'denied',
+                  'region': ['ES', 'US-AK']
+                });
+                gtag('config', 'G-GXSPJJDFHV');
+                `
+              }}
+            />
+          </head>
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>{children}</body>
     </html>
   );
