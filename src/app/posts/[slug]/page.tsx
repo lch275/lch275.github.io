@@ -45,27 +45,12 @@ export default async function PostPage({ params }: PageProps) {
     const createdDate = new Date(post.frontMatter.createdAt);
     const updatedDate = new Date(post.frontMatter.updatedAt);
     const isUpdated = post.frontMatter.updatedAt !== post.frontMatter.createdAt;
-
+    console.log(post.content);
     return (
       // Tailwind Typography 플러그인을 사용한 article 스타일링
       // prose 클래스로 타이포그래피 기본 스타일 적용
       // 다른 페이지들과 일관된 레이아웃으로 데스크톱에서 더 넓게
       <article className="prose prose-lg prose-zinc dark:prose-invert mx-auto py-8 sm:py-12 max-w-[calc(100vw-16px)] sm:max-w-[calc(100vw-24px)] lg:max-w-[calc(100vw-48px)] xl:max-w-[calc(100vw-64px)]">
-        {/* 포스트 제목 - h1 태그로 의미적 구조 제공 */}
-        <h1>{post.frontMatter.title}</h1>
-
-        {/* 포스트 작성일과 수정일 표시 - 메타 정보로 시각적 구분 */}
-        <div className="text-xl text-gray-500 space-y-1 mb-8">
-          <p>
-            작성일: {`${createdDate.getFullYear()}년 ${createdDate.getMonth() + 1}월 ${createdDate.getDate()}일`}
-          </p>
-          {isUpdated && (
-            <p>
-              수정일: {`${updatedDate.getFullYear()}년 ${updatedDate.getMonth() + 1}월 ${updatedDate.getDate()}일`}
-            </p>
-          )}
-        </div>
-
         {/* MDX로 컴파일된 콘텐츠 렌더링
             - mt-8로 제목과 본문 사이 여백 확보
             - post.content는 이미 JSX로 변환된 MDX 콘텐츠 */}
