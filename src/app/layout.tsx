@@ -43,16 +43,16 @@ export default function RootLayout({
       {/* 폰트 CSS 변수와 antialiased 클래스를 body에 적용
           - antialiased: 텍스트 렌더링 품질 향상
           - 두 폰트 변수를 동시에 적용하여 필요에 따라 선택적 사용 가능 */}
-          <head>
-            <Script
-              strategy="afterInteractive"
-              src={`https://www.googletagmanager.com/gtag/js?id=G-GXSPJJDFHV`}
-            />
-            <Script
-              id="google-analytics"
-              strategy="afterInteractive"
-              dangerouslySetInnerHTML={{
-                __html: `window.dataLayer = window.dataLayer || [];
+      <head>
+        <Script
+          strategy="afterInteractive"
+          src={`https://www.googletagmanager.com/gtag/js?id=G-GXSPJJDFHV`}
+        />
+        <Script
+          id="google-analytics"
+          strategy="afterInteractive"
+          dangerouslySetInnerHTML={{
+            __html: `window.dataLayer = window.dataLayer || [];
                 function gtag(){dataLayer.push(arguments);}
                 gtag('js', new Date());
 
@@ -65,10 +65,10 @@ export default function RootLayout({
                 });
                 gtag('config', 'G-GXSPJJDFHV');
                 `
-              }}
-            />
-          </head>
-      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>{children}</body>
+          }}
+        />
+      </head>
+      <body className={`${geistMono.variable} antialiased`}>{children}</body>
     </html>
   );
 }
