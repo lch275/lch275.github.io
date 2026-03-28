@@ -1,67 +1,162 @@
-// 개별 포스트를 표시하는 동적 라우트 페이지
-// MDX 콘텐츠를 렌더링하고 메타데이터를 동적으로 생성
-
 import type { Metadata } from "next";
+import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getPostBySlug, getPostSlugs } from "../utils";
+import { getPostBySlug, getPostSlugs, extractHeadings } from "../utils";
+import { SITE_URL, SITE_NAME } from "@/lib/config";
 import GiscusArea from "@/components/GiscusArea";
+import TableOfContents from "@/components/TableOfContents";
 
-// 페이지 props 타입 정의 - slug 파라미터를 받음
 type PageProps = { params: Promise<{ slug: string }> };
 
-// 정적 생성을 위한 파라미터 생성 함수
-// 모든 MDX 포스트에 대해 빌드 타임에 정적 페이지 생성
 export async function generateStaticParams() {
-  // content 폴더의 모든 MDX 파일 slug를 가져옴
   const slugs = await getPostSlugs();
-  // 각 slug에 대해 { slug } 객체 반환하여 정적 라우트 생성
   return slugs.map((slug) => ({ slug }));
 }
 
-// 동적 메타데이터 생성 함수 - 각 포스트의 frontmatter 기반
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { slug } = await params;
   try {
-    // 포스트의 frontmatter에서 메타데이터 추출
     const { frontMatter } = await getPostBySlug(slug);
+    const url = `${SITE_URL}/posts/${slug}/`;
     return {
-      // 포스트 제목을 브라우저 탭 제목에 포함
-      title: `${frontMatter.title} | MDX Blog`,
-      // 포스트 설명을 메타 디스크립션으로 사용 (SEO 최적화)
+      title: frontMatter.title,
       description: frontMatter.description,
+      alternates: { canonical: url },
+      openGraph: {
+        type: "article",
+        url,
+        title: frontMatter.title,
+        description: frontMatter.description,
+        publishedTime: frontMatter.createdAt,
+        modifiedTime: frontMatter.updatedAt,
+        siteName: SITE_NAME,
+        locale: "ko_KR",
+      },
+      twitter: {
+        card: "summary_large_image",
+        title: frontMatter.title,
+        description: frontMatter.description,
+      },
     };
   } catch {
-    // 포스트를 찾을 수 없는 경우 기본 메타데이터 반환
-    return { title: "Post | MDX Blog" };
+    return { title: "포스트를 찾을 수 없습니다" };
   }
 }
 
-// 포스트 상세 페이지 컴포넌트
 export default async function PostPage({ params }: PageProps) {
   const { slug } = await params;
   try {
-    // slug를 기반으로 포스트 데이터와 렌더링된 MDX 콘텐츠 가져옴
-    const post = await getPostBySlug(slug);
+    const [post] = await Promise.all([getPostBySlug(slug)]);
+    const headings = extractHeadings(post.rawContent);
+
     const createdDate = new Date(post.frontMatter.createdAt);
     const updatedDate = new Date(post.frontMatter.updatedAt);
     const isUpdated = post.frontMatter.updatedAt !== post.frontMatter.createdAt;
-    console.log(post.content);
+
+    const wordCount = post.rawContent.trim().split(/\s+/).length;
+    const readingTime = Math.ceil(wordCount / 200);
+
+    const blogPostingJsonLd = {
+      "@context": "https://schema.org",
+      "@type": "BlogPosting",
+      headline: post.frontMatter.title,
+      description: post.frontMatter.description,
+      datePublished: post.frontMatter.createdAt,
+      dateModified: post.frontMatter.updatedAt,
+      url: `${SITE_URL}/posts/${slug}/`,
+      publisher: {
+        "@type": "Organization",
+        name: SITE_NAME,
+        url: SITE_URL,
+      },
+    };
+
     return (
-      // Tailwind Typography 플러그인을 사용한 article 스타일링
-      // prose 클래스로 타이포그래피 기본 스타일 적용
-      // 다른 페이지들과 일관된 레이아웃으로 데스크톱에서 더 넓게
-      <article className="prose prose-lg prose-zinc dark:prose-invert mx-auto py-8 sm:py-12 max-w-[calc(100vw-16px)] sm:max-w-[calc(100vw-24px)] lg:max-w-[calc(100vw-48px)] xl:max-w-[calc(100vw-64px)]">
-        {/* MDX로 컴파일된 콘텐츠 렌더링
-            - mt-8로 제목과 본문 사이 여백 확보
-            - post.content는 이미 JSX로 변환된 MDX 콘텐츠 */}
-        <div className="mt-8">{post.content}</div>
-        <GiscusArea />
-      </article>
+      <>
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(blogPostingJsonLd) }}
+        />
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 sm:py-12">
+          <div className="flex gap-12">
+            {/* 포스트 본문 */}
+            <div className="min-w-0 max-w-[75ch]">
+              {/* 포스트 헤더 */}
+              <header className="mb-8">
+                <nav className="text-sm text-gray-500 dark:text-neutral-400 mb-4">
+                  <Link href="/" className="hover:text-gray-700 dark:hover:text-neutral-200">
+                    홈
+                  </Link>
+                  {" / "}
+                  <Link
+                    href={`/categories/${post.frontMatter.category}`}
+                    className="hover:text-gray-700 dark:hover:text-neutral-200"
+                  >
+                    {post.frontMatter.category.toUpperCase()}
+                  </Link>
+                </nav>
+
+                <h1 className="text-3xl sm:text-4xl font-bold text-gray-900 dark:text-white leading-tight mb-4">
+                  {post.frontMatter.title}
+                </h1>
+
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 dark:text-neutral-400">
+                  <time dateTime={post.frontMatter.createdAt}>
+                    {createdDate.toLocaleDateString("ko-KR", {
+                      year: "numeric",
+                      month: "long",
+                      day: "numeric",
+                    })}
+                  </time>
+                  {isUpdated && (
+                    <span>
+                      수정일:{" "}
+                      {updatedDate.toLocaleDateString("ko-KR", {
+                        year: "numeric",
+                        month: "long",
+                        day: "numeric",
+                      })}
+                    </span>
+                  )}
+                  <span>{readingTime}분 읽기</span>
+                </div>
+
+                {post.frontMatter.tags && post.frontMatter.tags.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    {post.frontMatter.tags.map((tag) => (
+                      <Link
+                        key={tag}
+                        href={`/tags/${tag}`}
+                        className="px-2 py-0.5 text-xs rounded-full bg-gray-100 dark:bg-neutral-800 text-gray-600 dark:text-neutral-300 hover:bg-gray-200 dark:hover:bg-neutral-700 transition-colors"
+                      >
+                        #{tag}
+                      </Link>
+                    ))}
+                  </div>
+                )}
+              </header>
+
+              {/* 포스트 본문 */}
+              <article className="prose prose-lg prose-zinc dark:prose-invert max-w-none">
+                {post.content}
+              </article>
+
+              <GiscusArea />
+            </div>
+
+            {/* 목차 사이드바 */}
+            {headings.length > 0 && (
+              <aside className="hidden xl:block w-56 flex-shrink-0">
+                <div className="sticky top-20">
+                  <TableOfContents headings={headings} />
+                </div>
+              </aside>
+            )}
+          </div>
+        </div>
+      </>
     );
   } catch {
-    // 포스트를 찾을 수 없거나 파싱 오류 시 404 페이지로 이동
     notFound();
   }
 }
-
-

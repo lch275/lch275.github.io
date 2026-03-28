@@ -1,11 +1,5 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
-@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");
-
-/* 1rem = 10px로 설정 (16px × 62.5% = 10px) */
-html {
-  font-size: 62.5%;
-}
 
 :root {
   --background: #ffffff;
@@ -15,8 +9,10 @@ html {
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, system-ui, Roboto, "Helvetica Neue", "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-noto-sans-kr), "Apple SD Gothic Neo", "Noto Sans KR",
+    "Malgun Gothic", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -30,40 +26,14 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
-  font-size: 1.6rem; /* 16px equivalent when html font-size is 62.5% */
 }
 
-.prose h1, .prose h2, .prose h3, .prose h4 {
-  scroll-margin-top: 96px;
-}
-
-/* prose 요소들의 폰트 크기를 브라우저 기본 크기(16px)로 설정 */
-.prose {
-  font-size: 1.6rem; /* 16px equivalent when html font-size is 62.5% */
-}
-
-.prose p, .prose li, .prose blockquote, .prose td, .prose th {
-  font-size: 1.6rem !important;
-}
-
-.prose h1 {
-  font-size: 3.6rem !important; /* 36px */
-}
-
-.prose h2 {
-  font-size: 3rem !important; /* 30px */
-}
-
-.prose h3 {
-  font-size: 2.4rem !important; /* 24px */
-}
-
+/* 헤더 높이(56px = 3.5rem)를 고려한 앵커 스크롤 오프셋 */
+.prose h1,
+.prose h2,
+.prose h3,
 .prose h4 {
-  font-size: 2rem !important; /* 20px */
-}
-
-.prose h5, .prose h6 {
-  font-size: 1.8rem !important; /* 18px */
+  scroll-margin-top: 5rem;
 }
 
 /* 다크모드에서 prose 요소들의 텍스트를 흰색으로 설정 */
@@ -71,19 +41,27 @@ body {
   .prose {
     color: #ffffff !important;
   }
-  
-  .prose h1, .prose h2, .prose h3, .prose h4, .prose h5, .prose h6 {
+
+  .prose h1,
+  .prose h2,
+  .prose h3,
+  .prose h4,
+  .prose h5,
+  .prose h6 {
     color: #ffffff !important;
   }
-  
-  .prose p, .prose li, .prose blockquote {
+
+  .prose p,
+  .prose li,
+  .prose blockquote {
     color: #ffffff !important;
   }
-  
-  .prose strong, .prose em {
+
+  .prose strong,
+  .prose em {
     color: #ffffff !important;
   }
-  
+
   .prose code {
     color: #ffffff !important;
   }
@@ -91,12 +69,12 @@ body {
 
 /* 반응형 스크롤바 숨김 스타일 */
 .scrollbar-hide {
-  -ms-overflow-style: none;  /* IE and Edge */
-  scrollbar-width: none;  /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
 }
 
 .scrollbar-hide::-webkit-scrollbar {
-  display: none;  /* Chrome, Safari and Opera */
+  display: none; /* Chrome, Safari and Opera */
 }
 
 /* 텍스트 말줄임표 스타일 */

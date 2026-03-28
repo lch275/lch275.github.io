@@ -36,6 +36,12 @@ export type PostListItem = {
   frontMatter: PostFrontMatter; // 메타데이터
 };
 
+export type Heading = {
+  id: string;
+  text: string;
+  level: 1 | 2 | 3 | 4 | 5 | 6;
+};
+
 // 포스트 파일들이 저장된 디렉토리 경로
 // process.cwd()를 사용하여 프로젝트 루트 기준으로 절대 경로 생성
 const POSTS_DIR = path.join(process.cwd(), "src", "content");
@@ -116,12 +122,10 @@ export async function getPostBySlug(slug: string) {
   // 파일 내용 읽기
   const raw = await fs.readFile(full, "utf8");
   
-  // frontmatter와 본문 분리
   const { content, data } = matter(raw);
-  
-  // MDX 컴파일 수행 - React Server Component 환경에서 실행
+
   const { content: compiled } = await compileMDX<{ frontMatter: PostFrontMatter }>({
-    source: content, // MDX 본문 내용
+    source: content,
     options: {
       mdxOptions: {
         // Remark 플러그인들 (Markdown → MDX 변환 단계)
@@ -163,8 +167,54 @@ export async function getPostBySlug(slug: string) {
     tags: Array.isArray(fm.tags) ? fm.tags.map(String) : undefined,
   };
   
-  // 정규화된 메타데이터와 컴파일된 JSX 콘텐츠 반환
-  return { frontMatter: normalized, content: compiled };
+  return { frontMatter: normalized, content: compiled, rawContent: content };
+}
+
+// 원시 마크다운에서 헤딩을 추출 — rehype-slug와 동일한 ID 생성 규칙 적용
+export function extractHeadings(rawContent: string): Heading[] {
+  const headingRegex = /^(#{1,6})\s+(.+)$/gm;
+  const headings: Heading[] = [];
+  const slugCounts = new Map<string, number>();
+
+  let match;
+  while ((match = headingRegex.exec(rawContent)) !== null) {
+    const level = match[1].length as 1 | 2 | 3 | 4 | 5 | 6;
+    const text = match[2].replace(/`[^`]+`/g, (m) => m.slice(1, -1)).trim();
+
+    // github-slugger 동작과 최대한 유사하게 구현
+    let slug = text
+      .toLowerCase()
+      .replace(/<[^>]+>/g, "")
+      .replace(/[^\w\s\u00C0-\uFFFF-]/g, "")
+      .trim()
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+
+    const count = slugCounts.get(slug) ?? 0;
+    slugCounts.set(slug, count + 1);
+    if (count > 0) slug = `${slug}-${count}`;
+
+    headings.push({ id: slug, text, level });
+  }
+
+  return headings;
+}
+
+export async function getAllTags(): Promise<string[]> {
+  const posts = await listPosts();
+  const tagSet = new Set<string>();
+  for (const post of posts) {
+    if (post.frontMatter.tags) {
+      for (const tag of post.frontMatter.tags) tagSet.add(tag);
+    }
+  }
+  return Array.from(tagSet).sort();
+}
+
+export async function listPostsByTag(tag: string): Promise<PostListItem[]> {
+  const posts = await listPosts();
+  return posts.filter((post) => post.frontMatter.tags?.includes(tag) ?? false);
 }
 
 // 날짜 값을 안전하게 ISO 형식으로 정규화하는 헬퍼 함수
