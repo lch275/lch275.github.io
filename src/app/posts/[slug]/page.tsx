@@ -80,7 +80,7 @@ export default async function PostPage({ params }: PageProps) {
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 sm:py-12">
           <div className="flex gap-12">
             {/* 포스트 본문 */}
-            <div className="min-w-0 max-w-[75ch]">
+            <div className="min-w-0 max-w-[75ch] mx-auto xl:mx-0">
               {/* 포스트 헤더 */}
               <header className="mb-8">
                 <nav className="text-sm text-gray-500 dark:text-neutral-400 mb-4">
