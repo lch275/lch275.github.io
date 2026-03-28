@@ -67,6 +67,13 @@ body {
   }
 }
 
+/* 테이블 가로 오버플로우 방지 */
+.prose table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
 /* 반응형 스크롤바 숨김 스타일 */
 .scrollbar-hide {
   -ms-overflow-style: none; /* IE and Edge */
