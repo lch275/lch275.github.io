@@ -59,7 +59,7 @@ export default function CodeBlock(props: PreProps) {
   return (
     // 상대 위치 컨테이너 - 복사 버튼을 절대 위치로 배치하기 위함
     // group 클래스로 호버 시 복사 버튼 표시 효과
-    <div className="relative group">
+    <div className="relative group overflow-x-auto">
       {/* 복사 버튼 - 호버 시에만 표시되는 플로팅 버튼 */}
       <button
         type="button"
