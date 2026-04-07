@@ -21,7 +21,7 @@ export default function SiteHeader() {
           href="/"
           className="font-bold text-xl tracking-tight text-gray-900 dark:text-white hover:opacity-80 transition-opacity"
         >
-          ARCHIEVE
+          ARCHIVE
         </Link>
         <div className="flex items-center gap-6">
           {navLinks.map(({ href, label }) => {
