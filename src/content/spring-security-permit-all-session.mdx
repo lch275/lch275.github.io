@@ -98,10 +98,10 @@ DispatcherServlet → Controller
 
 ### 3.2 두 컴포넌트의 역할 비교
 
-| 구분 | 컴포넌트 | 역할 | 실행 시점 |
-|------|----------|------|-----------|
+| 구분               | 컴포넌트                           | 역할                                                               | 실행 시점        |
+| ------------------ | ---------------------------------- | ------------------------------------------------------------------ | ---------------- |
 | 인증 컨텍스트 준비 | `SecurityContextPersistenceFilter` | 세션에서 SecurityContext를 로드하여 `SecurityContextHolder`에 설정 | 필터 체인 최선두 |
-| 인가 판단 | `FilterSecurityInterceptor` | `permitAll()`, `hasRole()` 등의 규칙을 적용 | 필터 체인 후미 |
+| 인가 판단          | `FilterSecurityInterceptor`        | `permitAll()`, `hasRole()` 등의 규칙을 적용                        | 필터 체인 후미   |
 
 `SecurityContextPersistenceFilter`는 "이 요청자가 누구인가"를 파악하는 단계이고, `FilterSecurityInterceptor`는 "이 요청자가 이 경로에 접근할 수 있는가"를 판단하는 단계다. `permitAll()`은 후자에만 영향을 미친다.
 
@@ -293,12 +293,12 @@ Redis 조회 없음
 
 **.securityContext().disable() 적용 시 해당 경로에서 `SecurityContextHolder`는 빈 컨텍스트를 반환한다.** 이 경로를 처리하는 컨트롤러나 서비스 코드에서 `SecurityContextHolder.getContext().getAuthentication()`으로 인증 정보를 사용하는 경우 `null`이 반환되므로, 인증 정보에 의존하는 로직이 있으면 이 방법을 적용할 수 없다.
 
-| 항목 | 내용 |
-|------|------|
-| 지원 버전 | Spring Security 5.4+ |
+| 항목           | 내용                                                                |
+| -------------- | ------------------------------------------------------------------- |
+| 지원 버전      | Spring Security 5.4+                                                |
 | 이전 버전 대응 | `SecurityContextPersistenceFilter`를 필터 체인에서 직접 제거해야 함 |
-| 인증 정보 | 해당 경로에서 `Authentication`은 항상 `null` |
-| 세션 쿠키 | 응답에 세션 쿠키가 설정되지 않음 |
+| 인증 정보      | 해당 경로에서 `Authentication`은 항상 `null`                        |
+| 세션 쿠키      | 응답에 세션 쿠키가 설정되지 않음                                    |
 
 Spring Security 6.x에서는 `WebSecurityConfigurerAdapter`가 제거되었다. 동일한 효과를 내는 코드는 다음과 같다.
 
@@ -329,10 +329,10 @@ public SecurityFilterChain defaultFilterChain(HttpSecurity http) throws Exceptio
 
 `permitAll()`은 인가 레이어의 설정이다. 세션 로딩은 필터 체인 최선두의 `SecurityContextPersistenceFilter`가 담당한다. 이 두 가지는 완전히 다른 실행 경로에 있다.
 
-| 레이어 | 구성 요소 | 동작 시점 | permitAll()의 영향 |
-|--------|-----------|-----------|-------------------|
-| 인증 컨텍스트 준비 | `SecurityContextPersistenceFilter` | 필터 체인 최선두 | 없음 |
-| 인가 판단 | `FilterSecurityInterceptor` | 필터 체인 후미 | 직접 영향 |
+| 레이어             | 구성 요소                          | 동작 시점        | permitAll()의 영향 |
+| ------------------ | ---------------------------------- | ---------------- | ------------------ |
+| 인증 컨텍스트 준비 | `SecurityContextPersistenceFilter` | 필터 체인 최선두 | 없음               |
+| 인가 판단          | `FilterSecurityInterceptor`        | 필터 체인 후미   | 직접 영향          |
 
 `permitAll()`을 설정했다고 해서 그 요청에 대한 모든 보안 처리가 생략되는 것이 아니다. 인가 판단만 생략될 뿐, 인증 컨텍스트를 준비하는 단계는 그대로 실행된다.
 
