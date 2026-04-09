@@ -1,0 +1,339 @@
+---
+title: permitAll()인데 왜 Redis 세션을 읽는가 — Spring Security 5 필터 체인의 동작 방식
+createdAt: 2026-04-09
+updatedAt: 2026-04-09
+category: backend
+description: Spring Security 5에서 permitAll()을 설정해도 Redis 세션 조회가 발생하는 이유를 분석합니다. SecurityContextPersistenceFilter의 동작 흐름과 인가 레이어의 개념 차이를 설명하고, 특정 경로에서 세션 로딩을 차단하는 방법을 정리합니다.
+tags:
+  - spring-security
+  - spring-session
+  - redis
+  - java
+  - troubleshooting
+---
+
+## 1. 들어가며
+
+이벤트 페이지 API를 공개 경로로 운영할 때, `permitAll()`을 설정하면 세션 인증이 필요 없으니 Redis 세션 조회도 발생하지 않을 것이라고 판단했다.
+
+이벤트성 트래픽이 급증하면서 상황이 달라졌다. Redis 세션 서버의 CPU와 커넥션 수가 예상치 못한 수준으로 치솟기 시작했다. Redis MONITOR로 확인하자 `/api/event/**` 경로로 들어오는 모든 요청마다 세션 키 조회 명령이 발생하고 있었다. `permitAll()` 설정이 있음에도 불구하고.
+
+원인을 추적하니 `permitAll()`과 세션 로딩은 Spring Security 필터 체인에서 완전히 다른 실행 경로에 위치한다는 사실이 있었다.
+
+이 글에서는 다음 내용을 정리한다.
+
+- `permitAll()`이 세션 로딩을 막지 않는 이유
+- `SecurityContextPersistenceFilter`와 `FilterSecurityInterceptor`의 역할 차이
+- 코드 레벨에서 Redis 호출이 발생하는 지점
+- 특정 경로에서 세션 로딩 자체를 차단하는 방법
+
+## 2. 문제 확인
+
+### 2.1 전형적인 permitAll() 설정
+
+이벤트 API 경로를 공개하는 설정은 다음과 같이 작성한다.
+
+```java
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig extends WebSecurityConfigurerAdapter {
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http
+            .authorizeRequests()
+                .antMatchers("/api/event/**").permitAll()
+                .anyRequest().authenticated()
+            .and()
+            .sessionManagement()
+                .sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED);
+    }
+}
+```
+
+직관적으로는 `/api/event/**` 경로가 `permitAll()`이므로, 로그인된 사용자든 아닌 사용자든 세션 확인 없이 통과할 것처럼 보인다.
+
+### 2.2 Redis MONITOR로 확인한 실제 현상
+
+Redis MONITOR를 실행하면 다음과 같은 명령이 반복된다.
+
+```
+1713600000.123456 [0 10.0.0.1:51234] "GET" "spring:session:sessions:abc123def456..."
+1713600000.234567 [0 10.0.0.1:51235] "GET" "spring:session:sessions:xyz789uvw012..."
+1713600000.345678 [0 10.0.0.1:51236] "GET" "spring:session:sessions:mno345pqr678..."
+```
+
+`/api/event/**` 요청임에도 불구하고 로그인된 사용자의 세션 쿠키가 포함된 모든 요청에서 Redis `GET` 명령이 발생한다. 요청 빈도에 정확히 비례하여 Redis 조회 수가 증가한다.
+
+### 2.3 개념적 배경
+
+`permitAll()`은 인가(Authorization) 레이어의 설정이다. 반면 세션 로딩은 인증(Authentication) 컨텍스트 준비 단계에서 이루어진다. 이 두 단계는 필터 체인에서 서로 다른 위치에 존재하며, 인가 판단이 이루어지기 전에 이미 세션 로딩이 완료된다.
+
+## 3. 원인 분석 — 필터 체인의 동작 순서
+
+### 3.1 Spring Security 필터 체인 구조
+
+HTTP 요청이 들어오면 Spring Security의 필터들이 순서대로 실행된다.
+
+```
+HTTP 요청
+  │
+  ▼
+SecurityContextPersistenceFilter    ← [1] 세션에서 SecurityContext 로드
+  │
+  ▼
+UsernamePasswordAuthenticationFilter (해당 경로만)
+  │
+  ▼
+... (기타 필터들)
+  │
+  ▼
+FilterSecurityInterceptor           ← [2] permitAll() 판단 (인가)
+  │
+  ▼
+DispatcherServlet → Controller
+```
+
+핵심은 **[1] 세션 로딩이 [2] 인가 판단보다 앞선다**는 것이다. `permitAll()` 판단이 이루어지는 시점에는 이미 세션이 읽힌 후다.
+
+### 3.2 두 컴포넌트의 역할 비교
+
+| 구분 | 컴포넌트 | 역할 | 실행 시점 |
+|------|----------|------|-----------|
+| 인증 컨텍스트 준비 | `SecurityContextPersistenceFilter` | 세션에서 SecurityContext를 로드하여 `SecurityContextHolder`에 설정 | 필터 체인 최선두 |
+| 인가 판단 | `FilterSecurityInterceptor` | `permitAll()`, `hasRole()` 등의 규칙을 적용 | 필터 체인 후미 |
+
+`SecurityContextPersistenceFilter`는 "이 요청자가 누구인가"를 파악하는 단계이고, `FilterSecurityInterceptor`는 "이 요청자가 이 경로에 접근할 수 있는가"를 판단하는 단계다. `permitAll()`은 후자에만 영향을 미친다.
+
+## 4. 코드 분석
+
+Spring Security 5.7.x 소스를 기준으로 실제 Redis 호출이 발생하는 경로를 추적한다.
+
+### 4.1 SecurityContextPersistenceFilter.doFilter()
+
+```java
+// org.springframework.security.web.context.SecurityContextPersistenceFilter
+public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
+        throws IOException, ServletException {
+
+    HttpServletRequest request = (HttpServletRequest) req;
+    HttpServletResponse response = (HttpServletResponse) res;
+
+    // ...
+
+    HttpRequestResponseHolder holder = new HttpRequestResponseHolder(request, response);
+
+    // 세션에서 SecurityContext를 로드한다 — chain.doFilter() 이전에 실행됨
+    SecurityContext contextBeforeChainExecution = repo.loadContext(holder);
+
+    try {
+        SecurityContextHolder.setContext(contextBeforeChainExecution);
+
+        // 여기서 나머지 필터들이 실행된다
+        // FilterSecurityInterceptor (permitAll 판단)도 이 안에서 실행됨
+        chain.doFilter(holder.getRequest(), holder.getResponse());
+    } finally {
+        // ...
+        SecurityContextHolder.clearContext();
+    }
+}
+```
+
+`repo.loadContext(holder)` 호출이 `chain.doFilter()` 이전에 위치한다. `permitAll()` 판단을 담당하는 `FilterSecurityInterceptor`는 `chain.doFilter()` 내부에서 실행된다. 즉, **세션 로드 → 필터 체인 진행 → `permitAll()` 판단** 순서로 실행된다.
+
+### 4.2 HttpSessionSecurityContextRepository.loadContext()
+
+```java
+// org.springframework.security.web.context.HttpSessionSecurityContextRepository
+public SecurityContext loadContext(HttpRequestResponseHolder requestResponseHolder) {
+    HttpServletRequest request = requestResponseHolder.getRequest();
+    HttpServletResponse response = requestResponseHolder.getResponse();
+
+    // Spring Session이 개입하는 지점
+    // 세션 쿠키가 있으면 Spring Session은 여기서 Redis를 조회한다
+    HttpSession httpSession = request.getSession(false);
+
+    SecurityContext context = readSecurityContextFromSession(httpSession);
+
+    if (context == null) {
+        context = generateNewContext();
+    }
+
+    // ...
+    return context;
+}
+```
+
+`request.getSession(false)`는 새 세션을 생성하지 않고 기존 세션이 있으면 반환한다. Spring Session이 활성화된 환경에서 이 호출은 세션 쿠키를 확인하여 Redis 조회를 발생시킨다. **`permitAll()` 경로라도 세션 쿠키가 포함된 요청이면 여기서 Redis 조회가 발생한다.**
+
+### 4.3 HttpSessionSecurityContextRepository.readSecurityContextFromSession()
+
+```java
+// org.springframework.security.web.context.HttpSessionSecurityContextRepository
+private SecurityContext readSecurityContextFromSession(HttpSession httpSession) {
+    if (httpSession == null) {
+        return null;
+    }
+
+    // Spring Session 프록시 객체에 getAttribute를 호출하는 순간
+    // Redis GET 명령이 실행된다
+    Object contextFromSession = httpSession.getAttribute(springSecurityContextKey);
+
+    // ...
+}
+```
+
+`httpSession.getAttribute(springSecurityContextKey)` 호출 시점에 Spring Session의 프록시가 개입하여 실제 Redis `GET` 명령을 실행한다. 이것이 Redis 호출이 발생하는 정확한 지점이다.
+
+### 4.4 전체 흐름 다이어그램
+
+```
+[HTTP 요청: GET /api/event/123 (세션 쿠키 포함)]
+  │
+  ▼
+SecurityContextPersistenceFilter.doFilter()
+  │
+  ├─ repo.loadContext(holder)
+  │    │
+  │    ├─ request.getSession(false)      ← Spring Session 개입 지점
+  │    │
+  │    └─ readSecurityContextFromSession()
+  │         │
+  │         └─ httpSession.getAttribute(springSecurityContextKey)
+  │              │
+  │              └─ Redis GET spring:session:sessions:...  ← Redis 호출 발생
+  │
+  └─ chain.doFilter()                    ← 세션은 이미 읽힌 후
+       │
+       └─ FilterSecurityInterceptor
+            │
+            └─ permitAll() 판단          ← 여기서 통과 허용
+```
+
+`permitAll()` 판단이 이루어지는 시점에 Redis 조회는 이미 완료된 상태다.
+
+## 5. 해결 방법
+
+### 5.1 sessionCreationPolicy(STATELESS)만으로는 부족한 이유
+
+`STATELESS` 설정은 세션을 **생성하지 않겠다**는 의미다. 기존 세션이 있으면 여전히 읽는다.
+
+```java
+// STATELESS는 세션 생성을 막는다
+// 하지만 loadContext() 내부의 request.getSession(false)는
+// "생성 없이 기존 세션 조회"이므로 차단되지 않는다
+```
+
+즉 "생성 안 함" ≠ "읽지 않음"이다. 로그인된 사용자의 세션 쿠키가 포함된 요청은 `STATELESS` 설정 하에서도 Redis 조회를 유발한다.
+
+### 5.2 해결책: @Order + securityContext().disable()
+
+`SecurityContextPersistenceFilter` 자체를 비활성화하면 세션 로딩이 발생하지 않는다. `@Order`를 이용해 이벤트 API 전용 보안 설정을 더 높은 우선순위로 적용한다.
+
+```java
+// 이벤트 API 전용 설정 — 우선순위가 높아야 함
+@Configuration
+@Order(1)
+public class EventApiSecurityConfig extends WebSecurityConfigurerAdapter {
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http
+            .requestMatchers()
+                .antMatchers("/api/event/**")
+            .and()
+            .authorizeRequests()
+                .anyRequest().permitAll()
+            .and()
+            // SecurityContextPersistenceFilter 비활성화
+            // 이 경로에서는 세션 로딩 자체가 발생하지 않는다
+            .securityContext().disable()
+            .sessionManagement()
+                .sessionCreationPolicy(SessionCreationPolicy.STATELESS);
+    }
+}
+
+// 나머지 경로를 담당하는 기본 설정
+@Configuration
+@Order(2)
+public class DefaultSecurityConfig extends WebSecurityConfigurerAdapter {
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http
+            .authorizeRequests()
+                .anyRequest().authenticated()
+            .and()
+            .sessionManagement()
+                .sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED);
+    }
+}
+```
+
+`.securityContext().disable()` 적용 후의 요청 흐름은 다음과 같다.
+
+```
+[HTTP 요청: GET /api/event/123 (세션 쿠키 포함)]
+  │
+  ▼
+EventApiSecurityConfig 적용 (Order=1)
+  │
+  ├─ SecurityContextPersistenceFilter → 비활성화됨 (skip)
+  │
+  └─ chain.doFilter()
+       │
+       └─ FilterSecurityInterceptor
+            │
+            └─ permitAll() 판단 → 통과
+
+Redis 조회 없음
+```
+
+### 5.3 주의사항
+
+**.securityContext().disable() 적용 시 해당 경로에서 `SecurityContextHolder`는 빈 컨텍스트를 반환한다.** 이 경로를 처리하는 컨트롤러나 서비스 코드에서 `SecurityContextHolder.getContext().getAuthentication()`으로 인증 정보를 사용하는 경우 `null`이 반환되므로, 인증 정보에 의존하는 로직이 있으면 이 방법을 적용할 수 없다.
+
+| 항목 | 내용 |
+|------|------|
+| 지원 버전 | Spring Security 5.4+ |
+| 이전 버전 대응 | `SecurityContextPersistenceFilter`를 필터 체인에서 직접 제거해야 함 |
+| 인증 정보 | 해당 경로에서 `Authentication`은 항상 `null` |
+| 세션 쿠키 | 응답에 세션 쿠키가 설정되지 않음 |
+
+Spring Security 6.x에서는 `WebSecurityConfigurerAdapter`가 제거되었다. 동일한 효과를 내는 코드는 다음과 같다.
+
+```java
+// Spring Security 6.x 대응
+@Bean
+@Order(1)
+public SecurityFilterChain eventApiFilterChain(HttpSecurity http) throws Exception {
+    http
+        .securityMatcher("/api/event/**")
+        .authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
+        .securityContext(context -> context.disable())
+        .sessionManagement(session ->
+            session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
+    return http.build();
+}
+
+@Bean
+@Order(2)
+public SecurityFilterChain defaultFilterChain(HttpSecurity http) throws Exception {
+    http
+        .authorizeHttpRequests(auth -> auth.anyRequest().authenticated());
+    return http.build();
+}
+```
+
+## 6. 마무리
+
+`permitAll()`은 인가 레이어의 설정이다. 세션 로딩은 필터 체인 최선두의 `SecurityContextPersistenceFilter`가 담당한다. 이 두 가지는 완전히 다른 실행 경로에 있다.
+
+| 레이어 | 구성 요소 | 동작 시점 | permitAll()의 영향 |
+|--------|-----------|-----------|-------------------|
+| 인증 컨텍스트 준비 | `SecurityContextPersistenceFilter` | 필터 체인 최선두 | 없음 |
+| 인가 판단 | `FilterSecurityInterceptor` | 필터 체인 후미 | 직접 영향 |
+
+`permitAll()`을 설정했다고 해서 그 요청에 대한 모든 보안 처리가 생략되는 것이 아니다. 인가 판단만 생략될 뿐, 인증 컨텍스트를 준비하는 단계는 그대로 실행된다.
+
+설정이 올바르게 보여도 필터 체인의 실행 순서를 이해하지 못하면 성능 문제는 남는다. 이벤트성 트래픽처럼 특정 순간에 집중되는 부하는 이런 숨겨진 비용을 드러내는 계기가 된다.
