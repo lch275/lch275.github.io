@@ -17,7 +17,7 @@ const notoSansKR = Noto_Sans_KR({
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default: `${SITE_NAME} - 주니어 개발자 기술 블로그`,
+    default: `${SITE_NAME} - 개발자의 기록과 회고`,
     template: `%s | ${SITE_NAME}`,
   },
   description: SITE_DESCRIPTION,
@@ -26,12 +26,12 @@ export const metadata: Metadata = {
     locale: "ko_KR",
     url: SITE_URL,
     siteName: SITE_NAME,
-    title: `${SITE_NAME} - 주니어 개발자 기술 블로그`,
+    title: `${SITE_NAME} - 개발자의 기록과 회고`,
     description: SITE_DESCRIPTION,
   },
   twitter: {
     card: "summary_large_image",
-    title: `${SITE_NAME} - 주니어 개발자 기술 블로그`,
+    title: `${SITE_NAME} - 개발자의 기록과 회고`,
     description: SITE_DESCRIPTION,
   },
   verification: {
