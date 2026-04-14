@@ -1,0 +1,486 @@
+---
+title: SPA 환경에서 외부 JS 라이브러리를 안전하게 로딩하기 — 브라우저 동작 원리부터 공통 유틸리티까지
+createdAt: 2026-04-14
+updatedAt: 2026-04-14
+description: SPA에서 외부 JS SDK를 동적으로 주입할 때 발생하는 타이밍 문제의 원인과, DOM 이벤트 기반 폴링과 재시도를 묶은 공통 유틸리티 설계를 정리합니다.
+category: frontend
+tags:
+  - SPA
+  - JavaScript
+  - Browser
+  - Script Loading
+---
+
+## 1. 들어가며
+
+금융권 프로젝트를 진행하다 보면, 외부 솔루션사에서 제공하는 JS SDK를 그대로 `<script>` 태그로 삽입해서 써야 하는 경우가 많다. 본인확인, 전자서명, 보안키패드, 지도, 결제 등 대부분의 외부 모듈이 이 방식이다.
+
+문제는 이런 라이브러리들이 대부분 **MPA(Multi Page Application) 시대의 전제** 위에서 만들어졌다는 것이다. 페이지를 새로 로드할 때마다 `<script>`가 다시 평가되고, `window.SomeSDK`가 항상 새로 초기화되는 환경을 가정한다.
+
+하지만 우리 서비스는 SPA다. 페이지 전환이 실제 페이지 로드가 아니라 라우터 전환이고, `<script>`는 한 번만 평가되며, 그 사이 `window` 객체는 계속 살아있다. 이 간극에서 다음과 같은 증상들이 반복해서 발생했다.
+
+- 특정 경로에서 처음 진입하면 `window.XxxSDK is undefined`가 뜬다
+- 두 번째 진입부터는 멀쩡히 동작한다
+- 느린 네트워크 환경(특히 모바일)에서 재현율이 올라간다
+- 어떤 팀원은 `setTimeout(..., 300)`으로, 어떤 팀원은 `onload`로, 또 어떤 팀원은 `while` 폴링으로 각자 해결하고 있었다
+
+각자 해결하다 보니 장애가 한 번 터질 때마다 대응 방식이 달랐고, 어떤 화면은 에러가 사용자에게 그대로 노출되기도 했다. 그래서 이 문제를 **공통 유틸리티**로 정리해 팀 전체에 공유했고, 그 과정을 기록한다.
+
+이 글에서는 다음 내용을 정리한다.
+
+- 브라우저는 `<script>`를 어떻게 로드하고 평가하는가 (MDN 기준)
+- MPA와 SPA에서 그 동작이 왜 다르게 느껴지는가
+- "로드 완료"와 "사용 가능"은 왜 다른 개념인가
+- DOM 이벤트 기반으로 준비 상태를 어떻게 판단할 것인가
+- 재시도와 사용자 에러 노출을 어떻게 일관되게 묶을 것인가
+
+## 2. 브라우저는 `<script>`를 어떻게 로드하는가
+
+먼저 브라우저가 HTML을 파싱하면서 `<script>`를 만났을 때 어떤 일이 일어나는지 정리하자. 여기서는 [MDN `<script>` 엘리먼트 문서](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script)와 HTML 스펙의 서술을 근거로 한다.
+
+### 2.1 기본 동작: parser-blocking
+
+`async`나 `defer`, `type="module"` 중 어느 것도 붙지 않은 일반 `<script src="...">`는 **파서를 멈추게 한다**. [MDN의 설명](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script#blocking)에 따르면, 특별한 속성이 없는 클래식 스크립트는 `type="module"`, `async`, `defer`가 없을 때 **렌더링이 아니라 파싱을 블록**한다. 즉 브라우저는 HTML 파싱을 잠시 멈추고 스크립트를 내려받아 평가한 뒤, 끝난 후에야 다시 DOM 구성을 이어간다.
+
+이 동작은 스크립트가 **문서 순서대로 보장되어 실행**되어야 하고, 그 이후의 inline 스크립트나 DOM이 스크립트의 결과에 의존할 수 있다는 전제를 안전하게 지키기 위한 것이다.
+
+### 2.2 `async`: 병렬 다운로드, 준비되는 즉시 실행
+
+`async` 속성이 붙은 외부 클래식 스크립트는 파싱과 병렬로 다운로드된다. 그리고 **다운로드가 끝나는 즉시 평가**된다. 파싱이 아직 끝나지 않았더라도 실행될 수 있다.
+
+중요한 특성이 하나 있다. 여러 개의 `async` 스크립트는 **서로의 순서를 보장하지 않는다.** 문서 순서와 무관하게 먼저 내려받아진 것이 먼저 실행된다(load-first order). 그래서 `async`는 의존성이 없는 독립 스크립트(예: 애널리틱스, 광고)에 적합하다.
+
+### 2.3 `defer`: 병렬 다운로드, 파싱 완료 후 순서대로 실행
+
+`defer`도 다운로드는 파싱과 병렬로 진행되지만, **실행은 문서 파싱이 끝난 뒤로 미뤄진다.** [MDN](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script#defer)에 따르면 `defer` 스크립트는 문서 파싱이 끝난 후, 그리고 `DOMContentLoaded` 이벤트가 발생하기 전에 실행된다. `defer` 스크립트가 여러 개 있으면 **문서에 나타난 순서대로 실행**되는 것이 보장된다.
+
+즉 `defer`는 "DOM이 완성된 시점에 순서대로 실행되어야 하는" 스크립트에 적합하다.
+
+정리하면 대략 이런 표가 된다.
+
+| 속성        | 다운로드 시점 | 실행 시점                           | 순서 보장 | 파싱 블록 |
+| ----------- | ------------- | ----------------------------------- | --------- | --------- |
+| 없음 (기본) | 만나는 즉시   | 다운로드 직후                       | 문서 순서 | O         |
+| `async`     | 병렬          | 다운로드 즉시                       | X         | X         |
+| `defer`     | 병렬          | 파싱 완료 후, `DOMContentLoaded` 전 | O         | X         |
+
+### 2.4 `DOMContentLoaded`와 `load` 이벤트
+
+MDN의 정의에 따르면 두 이벤트는 의미가 다르다.
+
+- **[`DOMContentLoaded`](https://developer.mozilla.org/en-US/docs/Web/API/Document/DOMContentLoaded_event)**: HTML 문서 파싱이 끝나고, `defer` 스크립트와 모듈 스크립트까지 실행이 완료된 시점에 발생한다. 이미지, iframe, `async` 스크립트의 로드는 기다리지 않는다.
+- **[`load`](https://developer.mozilla.org/en-US/docs/Web/API/Window/load_event)**: 페이지 전체가 로드되었을 때, 즉 스타일시트, 스크립트(`async`, `defer`, 모듈 포함), iframe, 이미지까지 모두 끝난 뒤 발생한다.
+
+여기서 한 가지 중요한 점이 있다. MDN은 다음과 같이 명시한다. **동적으로 주입된 스크립트 또는 `<script async>`는 실행 시점에 이미 `DOMContentLoaded`가 발생한 이후일 수 있다**는 것이다. 그래서 그런 스크립트 안에서 `DOMContentLoaded`를 리스너로 다는 것은 의미가 없을 수 있고, 대신 `document.readyState`를 확인해야 한다.
+
+이 사실은 SPA에서 매우 중요하다. 우리가 라우트 진입 시점에 `document.createElement('script')`로 스크립트를 붙이는 순간, 그 스크립트는 이미 `DOMContentLoaded`가 한참 지난 뒤에 로드된다. 즉 "문서 로드 시점"이라는 개념은 더 이상 외부 스크립트의 준비 상태를 판단하는 기준이 될 수 없다.
+
+### 2.5 개별 스크립트 엘리먼트의 `load` / `error` 이벤트
+
+그래서 동적 주입 상황에서 실제로 기준이 되는 것은 **개별 `<script>` 엘리먼트의 이벤트**다. MDN의 [`HTMLScriptElement`](https://developer.mozilla.org/en-US/docs/Web/API/HTMLScriptElement) 문서는 이 동작을 다음과 같이 서술한다.
+
+- 스크립트가 허용된 MIME 타입으로 내려오고 정상적으로 평가되면 해당 엘리먼트에 `load` 이벤트가 발송된다.
+- 만약 이미지/비디오/오디오/CSV 같은 차단 대상 MIME으로 응답되거나 네트워크 오류로 내려받지 못하면 `error` 이벤트가 발송된다.
+
+즉 한 장의 웹페이지 단위의 `window.load`가 아니라, 우리가 붙인 **그 `<script>` 노드 자체**의 `load`/`error` 이벤트가 SPA에서의 기준이다.
+
+### 2.6 동적으로 주입된 스크립트는 기본적으로 "async"처럼 동작한다
+
+MDN과 [HTML 스펙](https://html.spec.whatwg.org/multipage/scripting.html#attr-script-async)에는 또 하나의 중요한 내용이 있다. `document.createElement('script')`로 만들어진 스크립트 엘리먼트의 내부 플래그인 `force async`는 기본값이 `true`다. 그래서 **동적으로 삽입된 스크립트는 기본적으로 비동기로 실행**된다. 문서 순서나 다른 스크립트와의 의존 관계를 보장하지 않는다.
+
+만약 여러 개를 순서대로 실행하고 싶다면 명시적으로 `script.async = false`를 설정해야 한다. 이 경우 "문서 순서와 유사한 삽입 순서대로" 실행되도록 동작이 바뀐다.
+
+즉 라우트 진입 시 우리가 스크립트를 하나씩 `head`에 붙이는 행위는, 속성을 따로 조정하지 않는 한 모두 "독립된 async 스크립트를 차례로 던지는 것"과 같다. 서로 간의 순서 보장도 없고, HTML 파싱 흐름 같은 전체 페이지 라이프사이클과도 분리되어 있다.
+
+## 3. SPA에서 외부 스크립트 로딩이 까다로운 이유
+
+### 3.1 MPA의 암묵적 전제
+
+전통적인 MPA 환경에서 외부 SDK의 사용 흐름은 대략 이렇다.
+
+```html
+<!DOCTYPE html>
+<html>
+  <head>
+    <script src="https://cdn.vendor.com/sdk.js"></script>
+  </head>
+  <body>
+    <script>
+      // 이 시점에는 window.VendorSDK가 반드시 존재한다
+      VendorSDK.init({ ... });
+    </script>
+  </body>
+</html>
+```
+
+이 모델은 앞서 정리한 브라우저 동작에 비춰보면 다음을 전제한다.
+
+- 외부 스크립트는 **파서가 만나서 파싱을 블록**한 뒤 평가까지 완료된다
+- 이어지는 inline 스크립트는 그 뒤에 실행되므로 `window.VendorSDK`가 이미 존재한다고 가정해도 안전하다
+- 페이지 전환 = 문서 재로드이므로 모든 과정이 매 화면마다 **처음부터 다시** 일어난다
+
+즉 MPA는 사실 아무 노력 없이도 "스크립트 준비 상태"가 파서에 의해 자연스럽게 직렬화되어 있었다.
+
+### 3.2 SPA에서 깨지는 전제
+
+SPA에서는 이 직렬화가 사라진다.
+
+- 외부 스크립트를 `index.html`에 넣으면 **앱 진입 시 단 한 번만** 파서에 의해 평가된다
+- 특정 화면에서만 필요한 SDK를 전부 `index.html`에 넣으면 초기 로딩이 과하게 무거워진다
+- 그래서 보통 **라우트 진입 시점에 동적으로 `<script>`를 주입**한다
+- 이 경우 브라우저가 사용하는 실행 경로는 2.6에서 본 "동적 삽입 = 기본 async"에 해당한다
+- 그 결과 DOM에 스크립트 노드가 붙은 시점과, JS가 실제로 평가 완료된 시점, 그리고 `window.VendorSDK`가 정의된 시점이 **모두 분리**된다
+- 그 사이에 `VendorSDK.init(...)`를 호출하면 `undefined` 참조 에러가 난다
+
+즉 SPA에서는 "스크립트가 거기 있다"는 것과 "스크립트가 사용 가능하다"는 것이 **서로 다른 상태**가 되어버린다. 이 분리는 SPA가 만들어낸 버그가 아니라, 브라우저가 원래 그렇게 동작하도록 스펙에 정의되어 있는 것을 SPA라는 컨텍스트가 겉으로 드러낸 것일 뿐이다.
+
+### 3.3 흔한 잘못된 해결 시도
+
+팀에서 각자 쓰고 있던 코드들을 모아보면 대략 세 가지 패턴이었다.
+
+**패턴 1: 고정 지연**
+
+```js
+const script = document.createElement('script');
+script.src = VENDOR_SDK_URL;
+document.head.appendChild(script);
+
+setTimeout(() => {
+  window.VendorSDK.init({ ... });
+}, 500);
+```
+
+빠른 환경에서는 과하고, 느린 환경에서는 부족하다. 모바일 LTE/3G 환경에서 간헐적으로 실패한다.
+
+**패턴 2: `onload`만 사용**
+
+```js
+const script = document.createElement('script');
+script.src = VENDOR_SDK_URL;
+script.onload = () => {
+  window.VendorSDK.init({ ... });
+};
+document.head.appendChild(script);
+```
+
+대부분 동작하지만, `onload`가 불렸는데 `window.VendorSDK`가 아직 정의되지 않은 케이스가 있다. 이는 바로 다음 절에서 설명한다.
+
+**패턴 3: 무한 폴링**
+
+```js
+const timer = setInterval(() => {
+  if (window.VendorSDK) {
+    clearInterval(timer);
+    window.VendorSDK.init({ ... });
+  }
+}, 100);
+```
+
+타임아웃이 없어 실패 시 영원히 기다린다. 사용자에게 아무 피드백도 주지 않는다.
+
+세 가지 모두 공통적으로 **"실패"라는 상태를 인지하지 못한다**. 성공 시나리오만 고려하고 있는 것이다.
+
+## 4. "로드 완료"와 "사용 가능"은 같은 개념이 아니다
+
+### 4.1 `script.onload`가 보장하는 것
+
+2.5에서 본 대로, `HTMLScriptElement`의 `load` 이벤트는 브라우저가 외부 리소스를 내려받고 **해당 스크립트 블록의 평가가 정상적으로 끝났을 때** 호출된다. 즉 스크립트 파일 자체의 top-level 실행이 끝나 있다는 것까지는 보장된다.
+
+문제는 많은 외부 SDK가 top-level에서 즉시 `window.VendorSDK`를 정의하지 않는다는 것이다. 아래 같은 구조가 흔하다.
+
+```js
+// vendor-sdk.js (단순화)
+(function () {
+  // 1. 내부 스크립트를 추가로 로드
+  const inner = document.createElement("script");
+  inner.src = "https://cdn.vendor.com/sdk-core.js";
+  inner.onload = function () {
+    // 2. 이 시점에야 window.VendorSDK가 정의된다
+    window.VendorSDK = createSdk();
+  };
+  document.head.appendChild(inner);
+})();
+```
+
+이 경우 바깥 `sdk.js`의 `load`가 불려도, 안쪽 `sdk-core.js`는 아직 로딩 중일 수 있다. `onload` 콜백에서 곧바로 `window.VendorSDK`를 참조하면 `undefined`가 나온다.
+
+이는 브라우저가 잘못한 것이 아니다. 브라우저는 "이 `<script>` 엘리먼트의 평가가 끝났다"는 사실만 알려줄 뿐이고, 그 스크립트가 내부적으로 **또 다른 비동기 로딩을 체이닝**하는 건 알 수도 없고 알 필요도 없다.
+
+### 4.2 그래서 판단 기준은 `onload`가 아니다
+
+`onload`는 **필요조건**이지 충분조건이 아니다. 실제로 우리가 확인해야 하는 것은 다음 두 가지다.
+
+1. 외부 스크립트 엘리먼트가 DOM에 정상적으로 붙고 평가되었는가 (`load` 또는 `error`)
+2. 그 결과로 우리가 **실제로 사용할 객체가 `window`에 존재하는가** (`window.VendorSDK`, `window.VendorSDK.init` 등)
+
+이 두 가지를 같이 확인해야 한다. 그리고 `load` 이후에도 객체가 아직 없을 수 있으므로, 그 시점부터 **짧은 주기의 폴링**을 일정 횟수까지 허용해야 한다.
+
+### 4.3 실패 경로도 명시적으로 다뤄야 한다
+
+그리고 반드시 실패 경로가 있어야 한다.
+
+- 네트워크 오류 → `script.onerror` 발생
+- 차단 대상 MIME으로 응답 → 마찬가지로 `error` 이벤트
+- 스크립트는 로드됐지만 객체가 끝내 나타나지 않음 → 폴링 타임아웃
+- CDN은 응답했지만 200이 아닌 오류 페이지를 반환 → 평가는 됐지만 객체 없음
+
+이 경로들은 내부적으로 구분해서 로깅하되, 사용자에게는 **일관된 에러 UI**로 수렴시키는 것이 바람직하다.
+
+## 5. 공통 유틸리티 설계
+
+### 5.1 요구사항 정리
+
+위 분석을 종합하면 공통 유틸리티의 요구사항은 다음과 같다.
+
+- 동일한 `src`에 대해 **중복 `<script>` 삽입을 방지**한다 (SPA 특성상 여러 번 호출될 수 있다)
+- `script.load` / `script.error`라는 DOM 이벤트를 기준으로 1차 판단을 한다
+- `load` 이후에는 호출자가 정의한 "사용 가능 여부" 조건이 참이 될 때까지 **짧은 주기로 폴링**한다
+- 전체 시도에 **상한 시간**이 있다
+- 실패 시 일정 횟수까지 **전체 과정을 재시도**한다 (최종 실패 시에만 에러)
+- 최종 실패 시에는 **사용자에게 보여줄 수 있는 에러 객체**를 반환한다
+
+### 5.2 인터페이스 스케치
+
+```ts
+interface LoadExternalScriptOptions {
+  /** 스크립트 URL. 동일 URL은 중복 삽입하지 않는다. */
+  src: string;
+
+  /**
+   * "사용 가능" 판정 함수.
+   * load 이후 이 함수가 truthy를 반환할 때까지 폴링한다.
+   * 예: () => !!window.VendorSDK?.init
+   */
+  isReady: () => boolean;
+
+  /** load 이후 isReady 폴링 주기 (ms). 기본 50 */
+  pollIntervalMs?: number;
+
+  /** 한 번의 시도에 허용되는 최대 시간 (ms). 기본 5000 */
+  attemptTimeoutMs?: number;
+
+  /** 재시도 횟수. 기본 2 (= 총 3회 시도) */
+  maxRetries?: number;
+
+  /** 재시도 간 대기 시간 (ms). 기본 300 */
+  retryDelayMs?: number;
+}
+
+type LoadResult =
+  | { ok: true }
+  | { ok: false; reason: "network" | "timeout" | "unknown"; cause?: unknown };
+```
+
+핵심은 `isReady`를 **호출자가 주입**한다는 점이다. 유틸리티는 "무엇이 준비되었다고 볼 것인가"를 알지 못한다. 그 지식은 해당 SDK를 실제로 사용하는 호출자에게만 있다.
+
+### 5.3 구현
+
+```ts
+const inflight = new Map<string, Promise<LoadResult>>();
+
+export function loadExternalScript(
+  options: LoadExternalScriptOptions,
+): Promise<LoadResult> {
+  const {
+    src,
+    isReady,
+    pollIntervalMs = 50,
+    attemptTimeoutMs = 5000,
+    maxRetries = 2,
+    retryDelayMs = 300,
+  } = options;
+
+  // 이미 사용 가능한 경우: 즉시 성공
+  if (isReady()) {
+    return Promise.resolve({ ok: true });
+  }
+
+  // 동일 src로 진행 중인 로드가 있으면 그 Promise를 공유
+  const existing = inflight.get(src);
+  if (existing) return existing;
+
+  const task = runWithRetry(src, isReady, {
+    pollIntervalMs,
+    attemptTimeoutMs,
+    maxRetries,
+    retryDelayMs,
+  }).finally(() => {
+    inflight.delete(src);
+  });
+
+  inflight.set(src, task);
+  return task;
+}
+
+async function runWithRetry(
+  src: string,
+  isReady: () => boolean,
+  opts: Required<Omit<LoadExternalScriptOptions, "src" | "isReady">>,
+): Promise<LoadResult> {
+  let lastReason: LoadResult = { ok: false, reason: "unknown" };
+
+  for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
+    const result = await attemptOnce(src, isReady, opts);
+    if (result.ok) return result;
+
+    lastReason = result;
+
+    // 실패한 엘리먼트는 정리 후 재시도
+    removeScriptElement(src);
+
+    if (attempt < opts.maxRetries) {
+      await delay(opts.retryDelayMs);
+    }
+  }
+
+  return lastReason;
+}
+
+function attemptOnce(
+  src: string,
+  isReady: () => boolean,
+  opts: { pollIntervalMs: number; attemptTimeoutMs: number },
+): Promise<LoadResult> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let pollTimer: number | null = null;
+
+    const finish = (result: LoadResult) => {
+      if (settled) return;
+      settled = true;
+      if (pollTimer !== null) window.clearInterval(pollTimer);
+      window.clearTimeout(overallTimer);
+      resolve(result);
+    };
+
+    const overallTimer = window.setTimeout(() => {
+      finish({ ok: false, reason: "timeout" });
+    }, opts.attemptTimeoutMs);
+
+    const startPolling = () => {
+      if (isReady()) {
+        finish({ ok: true });
+        return;
+      }
+      pollTimer = window.setInterval(() => {
+        if (isReady()) finish({ ok: true });
+      }, opts.pollIntervalMs);
+    };
+
+    // 이미 같은 src의 엘리먼트가 있다면 재사용
+    const existingEl = document.querySelector<HTMLScriptElement>(
+      `script[data-ext-loader="${cssEscape(src)}"]`,
+    );
+    if (existingEl) {
+      startPolling();
+      return;
+    }
+
+    const el = document.createElement("script");
+    el.src = src;
+    el.async = true; // 명시적으로 기본 동작을 선언
+    el.dataset.extLoader = src;
+
+    el.addEventListener("load", startPolling);
+    el.addEventListener("error", (e) => {
+      finish({ ok: false, reason: "network", cause: e });
+    });
+
+    document.head.appendChild(el);
+  });
+}
+
+function removeScriptElement(src: string) {
+  const el = document.querySelector(
+    `script[data-ext-loader="${cssEscape(src)}"]`,
+  );
+  el?.parentNode?.removeChild(el);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function cssEscape(value: string): string {
+  return window.CSS && CSS.escape
+    ? CSS.escape(value)
+    : value.replace(/"/g, '\\"');
+}
+```
+
+짧게 정리하면 각 계층의 책임은 다음과 같다.
+
+| 계층                 | 책임                                                   |
+| -------------------- | ------------------------------------------------------ |
+| `loadExternalScript` | 중복 요청 병합, 이미 준비된 경우의 조기 반환           |
+| `runWithRetry`       | 시도 횟수 관리, 실패한 엘리먼트 정리, 재시도 간격      |
+| `attemptOnce`        | DOM 이벤트(`load`/`error`) + 폴링 + 단일 시도 타임아웃 |
+| `isReady` (주입)     | "이 SDK가 사용 가능한가"의 **유일한 판단 기준**        |
+
+### 5.4 사용 예
+
+```ts
+import { loadExternalScript } from "@/common/loadExternalScript";
+import { showErrorModal } from "@/common/errorModal";
+
+async function ensureVendorSdk(): Promise<boolean> {
+  const result = await loadExternalScript({
+    src: "https://cdn.vendor.com/sdk.js",
+    isReady: () => typeof window.VendorSDK?.init === "function",
+  });
+
+  if (!result.ok) {
+    showErrorModal({
+      title: "서비스를 준비하는 중 문제가 발생했어요",
+      message:
+        "네트워크 상태를 확인한 뒤 다시 시도해 주세요. 문제가 계속되면 잠시 후 다시 접속해 주세요.",
+      debugCode: `EXT_SDK_${result.reason.toUpperCase()}`,
+    });
+    return false;
+  }
+
+  return true;
+}
+
+// 라우트 진입 시
+async function onEnterIdVerificationPage() {
+  const ready = await ensureVendorSdk();
+  if (!ready) return;
+  window.VendorSDK.init({
+    /* ... */
+  });
+}
+```
+
+여기서 중요한 점은 **호출하는 쪽 코드에는 `setTimeout`도, `onload`도, `setInterval`도 없다**는 것이다. 호출자는 "이 SDK가 필요하다"와 "이 조건이 만족되면 사용 가능하다"만 표현한다. 나머지 상태 머신은 유틸리티 안에 숨어 있다.
+
+## 6. 공통화하면서 얻은 것
+
+이 유틸리티를 팀에 공유한 뒤 바뀐 점들을 정리하면 다음과 같다.
+
+- 외부 SDK 로딩 관련 장애가 발생했을 때 **디버깅 지점이 한 곳으로 모였다.** 이전에는 화면마다 각자 구현한 코드를 하나씩 열어봐야 했다.
+- 사용자에게 노출되는 에러 UI가 **일관**되어졌다. 어떤 화면은 `[object Object]`가 뜨고 어떤 화면은 흰 화면이 되는 일이 없어졌다.
+- 느린 환경에서의 재현성 이슈가 크게 줄었다. 기존 `setTimeout(..., 300)` 방식은 본질적으로 환경 의존적이었는데, DOM 이벤트 + 폴링 + 타임아웃 조합으로 바뀌면서 **환경 변동에 탄력적**이 되었다.
+- 새 SDK를 붙일 때 "로딩 처리를 어떻게 할 것인가"를 고민하지 않게 되었다. 붙이는 쪽은 `isReady` 함수만 작성하면 된다.
+
+## 7. 회고: 프레임워크 바깥의 세계를 프레임워크 안으로 들여오기
+
+이 문제를 겪기 전까지는 외부 스크립트 로딩을 "그냥 `<script>` 태그 하나 박으면 되는 일"로 생각하고 있었다. 실제로 MPA 시절에는 거의 그 수준의 일이 맞았다. 파서가 스크립트를 만났을 때 파싱을 블록하고, 다운로드와 평가가 끝나기 전까지 다음 inline 스크립트를 실행하지 않는 **브라우저의 기본 동작**이, 개발자가 따로 의식하지 않아도 "준비 상태 동기화"를 대신 해주고 있었던 것이다.
+
+SPA에서 이 동기화가 사라진 이유는 SPA가 이상해서가 아니라, 우리가 더 이상 **파서가 스크립트를 만나게 하지 않기 때문**이다. 라우트 진입 시점에 `document.createElement('script')`로 직접 붙이는 순간, 그 스크립트는 브라우저 입장에서는 "기본이 async인 동적 삽입 스크립트"가 되고, 문서 라이프사이클과 분리된 채로 독립적으로 로드된다. HTML 스펙과 MDN이 설명하는 그 동작 그대로다.
+
+문제의 본질은 "외부 SDK가 이상하다"가 아니었다. **브라우저가 파서 기반으로 제공해주던 암묵적 동기화가 SPA에서는 더 이상 자동으로 일어나지 않는다**는 것이 원인이었다. 프레임워크 바깥에서 만들어진 자원을 프레임워크 안으로 가져올 때는, 그 자원이 원래 기대하던 실행 환경을 **우리가 명시적으로 복원**해 주어야 한다. 이 공통 유틸리티는 그 복원 작업을 한 곳에 모아둔 것이다.
+
+어떤 자원이든 우리가 제어하지 못하는 바깥 세계에서 들어올 때는, 그 자원과 우리 프레임워크 사이의 **접합면에 얇은 레이어 하나**를 두는 것이 결국 가장 싸게 먹힌다. 문제가 생겼을 때 고쳐야 할 곳이 한 군데라는 것만으로도 이미 충분한 이유가 된다.
+
+## 8. 마무리
+
+정리하면 다음과 같다.
+
+- 브라우저는 `<script>`를 파서 기반, `async`, `defer`, 동적 삽입 네 가지 경로로 다르게 처리하며, **동적 삽입 스크립트는 기본적으로 async처럼 동작**한다
+- 동적으로 주입된 스크립트는 실행 시점에 이미 `DOMContentLoaded`가 지나 있을 수 있으므로, 문서 단위의 라이프사이클 이벤트는 판단 기준이 될 수 없다
+- 그래서 SPA에서는 **개별 `<script>` 엘리먼트의 `load`/`error` 이벤트**가 실질적인 기준이 된다
+- 그러나 `load`조차 "스크립트 평가 완료"만 보장할 뿐이며, "SDK 사용 가능"은 별도의 `isReady` 조건으로 확인해야 한다
+- 실패 경로(`error`, 타임아웃, 객체 미정의)까지 재시도와 사용자 에러 노출을 묶어 **공통 유틸리티**로 만들어두면 장애 대응도 단순해진다
+
+SPA는 "페이지"라는 개념을 없앤 대신, 그에 딸려 있던 브라우저의 암묵적 동기화 메커니즘도 함께 없애버린다. 외부 스크립트 로딩도 그중 하나다. 사라진 보장을 **우리가 다시 짜서 돌려주는 것**이 SPA에서 외부 자원을 다루는 기본 자세라고 생각한다.
