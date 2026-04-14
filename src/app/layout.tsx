@@ -28,11 +28,13 @@ export const metadata: Metadata = {
     siteName: SITE_NAME,
     title: `${SITE_NAME} - 개발자의 기록과 회고`,
     description: SITE_DESCRIPTION,
+    images: [{ url: "/image.png", width: 1200, height: 630 }],
   },
   twitter: {
     card: "summary_large_image",
     title: `${SITE_NAME} - 개발자의 기록과 회고`,
     description: SITE_DESCRIPTION,
+    images: ["/image.png"],
   },
   verification: {
     google: "zgQ64xU6IrOcuDIz8oXAiBoILR011ixm2SIHOC5iQmQ",
