@@ -14,7 +14,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   }));
 
   const tagEntries: MetadataRoute.Sitemap = tags.map((tag) => ({
-    url: `${SITE_URL}/tags/${tag}/`,
+    url: `${SITE_URL}/tags/${encodeURIComponent(tag)}/`,
   }));
 
   return [
