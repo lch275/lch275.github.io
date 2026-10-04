@@ -4,6 +4,7 @@ import "./globals.css";
 import Script from "next/script";
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
+import CookieConsent from "@/components/CookieConsent";
 import { SITE_URL, SITE_NAME, SITE_DESCRIPTION } from "@/lib/config";
 
 const notoSansKR = Noto_Sans_KR({
@@ -41,7 +42,10 @@ export const metadata: Metadata = {
       { url: "/apple-icon-180x180.png", sizes: "180x180", type: "image/png" },
     ],
     other: [
-      { rel: "apple-touch-icon-precomposed", url: "/apple-icon-precomposed.png" },
+      {
+        rel: "apple-touch-icon-precomposed",
+        url: "/apple-icon-precomposed.png",
+      },
     ],
   },
   openGraph: {
@@ -87,7 +91,7 @@ export default function RootLayout({
         />
         <Script
           strategy="afterInteractive"
-          src={`https://www.googletagmanager.com/gtag/js?id=G-GXSPJJDFHV`}
+          src={`https://www.googletagmanager.com/gtag/js?id=G-EJ6VL7GRG4`}
         />
         <Script
           id="google-analytics"
@@ -102,9 +106,10 @@ export default function RootLayout({
                   'ad_user_data': 'denied',
                   'ad_personalization': 'denied',
                   'analytics_storage': 'denied',
-                  'region': ['ES', 'US-AK']
+                  'wait_for_update': 500,
+                  'region': ['EEA']
                 });
-                gtag('config', 'G-GXSPJJDFHV');
+                gtag('config', 'G-EJ6VL7GRG4');
                 `,
           }}
         />
@@ -119,6 +124,7 @@ export default function RootLayout({
         <SiteHeader />
         <main id="main-content">{children}</main>
         <SiteFooter />
+        <CookieConsent />
       </body>
     </html>
   );
