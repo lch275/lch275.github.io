@@ -61,6 +61,13 @@ export const ko = {
       `${siteName}에서 #${tag} 태그가 달린 글 목록입니다.`,
   },
 
+  // 다른 언어 안내 배너 — 이 사전의 언어를 선호하는 방문자에게 그 언어로 보여준다
+  localeHint: {
+    message: "이 페이지는 한국어로도 읽을 수 있습니다.",
+    action: "한국어로 보기",
+    dismiss: "닫기",
+  },
+
   // 쿠키 동의
   consent: {
     label: "쿠키 사용 동의",

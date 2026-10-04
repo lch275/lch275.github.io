@@ -84,6 +84,30 @@ export function switchLocalePath(pathname: string, to: Locale): string {
   return localePath(to, stripLocalePrefix(pathname));
 }
 
+// 방문자의 선호 언어 목록(navigator.languages)에서 안내할 대상 로케일을 고른다.
+//
+// 자동 리다이렉트는 하지 않는다 (Google 권고). 안내 배너를 띄울지 판단하는 용도이며,
+// 현재 보고 있는 로케일이 선호 목록에 있으면 안내할 필요가 없으므로 null을 반환한다.
+export function pickPreferredLocale(
+  preferred: readonly string[],
+  current: Locale
+): Locale | null {
+  // "en-US" -> "en" 처럼 지역 구분자를 떼고 기본 언어만 본다
+  const base = preferred
+    .map((tag) => tag.toLowerCase().split("-")[0])
+    .filter(Boolean);
+
+  // 현재 로케일을 이미 선호하면 안내하지 않는다
+  if (base.includes(current)) return null;
+
+  // 선호 순서대로 보고, 지원하는 로케일 중 첫 번째를 고른다
+  for (const lang of base) {
+    const match = LOCALES.find((locale) => locale === lang);
+    if (match && match !== current) return match;
+  }
+  return null;
+}
+
 type DateStyle = "long" | "short";
 
 const DATE_OPTIONS: Record<DateStyle, Intl.DateTimeFormatOptions> = {

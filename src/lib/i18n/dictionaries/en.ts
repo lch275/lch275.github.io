@@ -53,6 +53,12 @@ export const en: Dictionary = {
       `Posts tagged #${tag} on ${siteName}.`,
   },
 
+  localeHint: {
+    message: "This page is also available in English.",
+    action: "Read in English",
+    dismiss: "Dismiss",
+  },
+
   consent: {
     label: "Cookie consent",
     message:

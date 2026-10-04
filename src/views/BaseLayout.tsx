@@ -7,6 +7,7 @@ import Script from "next/script";
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import CookieConsent from "@/components/CookieConsent";
+import LocaleHint from "@/components/LocaleHint";
 import { SITE_NAME } from "@/lib/config";
 import { getDictionary, HTML_LANG, localeUrl, type Locale } from "@/lib/i18n";
 import { listAllRoutePaths } from "@/lib/routes";
@@ -85,6 +86,7 @@ export default async function BaseLayout({ locale, children }: Props) {
           {dict.skipToContent}
         </a>
         <SiteHeader locale={locale} availablePaths={availablePaths} />
+        <LocaleHint locale={locale} availablePaths={availablePaths} />
         <main id="main-content">{children}</main>
         <SiteFooter />
         <CookieConsent locale={locale} />
