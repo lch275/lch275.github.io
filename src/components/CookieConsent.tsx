@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { GA_MEASUREMENT_ID } from "@/lib/config";
 
 declare global {
   interface Window {
@@ -9,6 +10,7 @@ declare global {
 }
 
 const STORAGE_KEY = "cookie-consent";
+const GA_SCRIPT_ID = "google-analytics-script";
 
 type ConsentChoice = "granted" | "denied";
 
@@ -16,6 +18,21 @@ function applyConsent(choice: ConsentChoice) {
   window.gtag?.("consent", "update", {
     analytics_storage: choice,
   });
+}
+
+// 동의가 있을 때만 gtag.js를 로드하고 GA를 초기화한다.
+// 동의 전에는 이 함수가 호출되지 않으므로 Google로 어떤 요청도 나가지 않는다.
+function loadAnalytics() {
+  if (document.getElementById(GA_SCRIPT_ID)) return;
+
+  const script = document.createElement("script");
+  script.id = GA_SCRIPT_ID;
+  script.async = true;
+  script.src = `https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`;
+  document.head.appendChild(script);
+
+  window.gtag?.("js", new Date());
+  window.gtag?.("config", GA_MEASUREMENT_ID);
 }
 
 export default function CookieConsent() {
@@ -26,9 +43,16 @@ export default function CookieConsent() {
       | ConsentChoice
       | null;
 
-    if (stored === "granted" || stored === "denied") {
-      // 이전에 선택한 동의 상태를 다시 적용 (기본값은 'denied'이므로 재접속 시에도 유지되도록)
-      applyConsent(stored);
+    if (stored === "granted") {
+      // 이전에 동의한 사용자: 동의 상태를 재적용하고 GA를 로드한다.
+      applyConsent("granted");
+      loadAnalytics();
+      return;
+    }
+
+    if (stored === "denied") {
+      // 이전에 거부한 사용자: 기본값(denied)을 유지할 뿐, GA는 로드하지 않는다.
+      applyConsent("denied");
       return;
     }
 
@@ -38,6 +62,9 @@ export default function CookieConsent() {
   const handleChoice = (choice: ConsentChoice) => {
     window.localStorage.setItem(STORAGE_KEY, choice);
     applyConsent(choice);
+    if (choice === "granted") {
+      loadAnalytics();
+    }
     setVisible(false);
   };
 

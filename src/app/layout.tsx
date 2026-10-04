@@ -89,26 +89,26 @@ export default function RootLayout({
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteJsonLd) }}
         />
+        {/*
+          동의 전에는 gtag.js 스크립트 자체를 로드하지 않는다(Basic Consent Mode).
+          여기서는 dataLayer/gtag 스텁과 기본 동의 상태(전체 거부)만 등록해두고,
+          실제 스크립트 로드 및 gtag('config', ...) 호출은 사용자가 동의했을 때
+          CookieConsent 컴포넌트에서 수행한다.
+        */}
         <Script
-          strategy="afterInteractive"
-          src={`https://www.googletagmanager.com/gtag/js?id=G-EJ6VL7GRG4`}
-        />
-        <Script
-          id="google-analytics"
-          strategy="afterInteractive"
+          id="google-analytics-consent-default"
+          strategy="beforeInteractive"
           dangerouslySetInnerHTML={{
             __html: `window.dataLayer = window.dataLayer || [];
                 function gtag(){dataLayer.push(arguments);}
-                gtag('js', new Date());
+                window.gtag = gtag;
 
                 gtag('consent', 'default', {
                   'ad_storage': 'denied',
                   'ad_user_data': 'denied',
                   'ad_personalization': 'denied',
-                  'analytics_storage': 'denied',
-                  'wait_for_update': 500
+                  'analytics_storage': 'denied'
                 });
-                gtag('config', 'G-EJ6VL7GRG4');
                 `,
           }}
         />
