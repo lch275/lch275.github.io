@@ -11,8 +11,38 @@ declare global {
 
 const STORAGE_KEY = "cookie-consent";
 const GA_SCRIPT_ID = "google-analytics-script";
+// 거부(미동의) 고객에게는 1시간마다 동의 팝업을 다시 노출한다.
+const RE_PROMPT_INTERVAL_MS = 60 * 60 * 1000;
 
 type ConsentChoice = "granted" | "denied";
+
+type StoredConsent = {
+  choice: ConsentChoice;
+  timestamp: number;
+};
+
+function readStoredConsent(): StoredConsent | null {
+  const raw = window.localStorage.getItem(STORAGE_KEY);
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed?.choice === "granted" || parsed?.choice === "denied") {
+      return { choice: parsed.choice, timestamp: parsed.timestamp ?? 0 };
+    }
+  } catch {
+    // 이전 버전(문자열만 저장)과의 호환: timestamp가 없으므로 즉시 재노출 대상으로 간주
+    if (raw === "granted" || raw === "denied") {
+      return { choice: raw, timestamp: 0 };
+    }
+  }
+  return null;
+}
+
+function writeStoredConsent(choice: ConsentChoice) {
+  const data: StoredConsent = { choice, timestamp: Date.now() };
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}
 
 function applyConsent(choice: ConsentChoice) {
   window.gtag?.("consent", "update", {
@@ -39,28 +69,40 @@ export default function CookieConsent() {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
-    const stored = window.localStorage.getItem(STORAGE_KEY) as
-      | ConsentChoice
-      | null;
+    const evaluate = () => {
+      const stored = readStoredConsent();
 
-    if (stored === "granted") {
-      // 이전에 동의한 사용자: 동의 상태를 재적용하고 GA를 로드한다.
-      applyConsent("granted");
-      loadAnalytics();
-      return;
-    }
+      if (!stored) {
+        setVisible(true);
+        return;
+      }
 
-    if (stored === "denied") {
-      // 이전에 거부한 사용자: 기본값(denied)을 유지할 뿐, GA는 로드하지 않는다.
-      applyConsent("denied");
-      return;
-    }
+      if (stored.choice === "granted") {
+        // 동의한 사용자는 재노출 대상이 아니다.
+        applyConsent("granted");
+        loadAnalytics();
+        setVisible(false);
+        return;
+      }
 
-    setVisible(true);
+      // 미동의(거부) 사용자: 마지막 거부로부터 1시간이 지났다면 다시 팝업을 띄운다.
+      const elapsed = Date.now() - stored.timestamp;
+      if (elapsed >= RE_PROMPT_INTERVAL_MS) {
+        setVisible(true);
+      } else {
+        applyConsent("denied");
+        setVisible(false);
+      }
+    };
+
+    evaluate();
+    // 페이지를 오래 열어두는 경우에도 1시간마다 재평가되도록 주기적으로 체크한다.
+    const interval = window.setInterval(evaluate, RE_PROMPT_INTERVAL_MS);
+    return () => window.clearInterval(interval);
   }, []);
 
   const handleChoice = (choice: ConsentChoice) => {
-    window.localStorage.setItem(STORAGE_KEY, choice);
+    writeStoredConsent(choice);
     applyConsent(choice);
     if (choice === "granted") {
       loadAnalytics();
