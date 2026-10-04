@@ -31,6 +31,20 @@ export async function listCategoryParams(locale: Locale): Promise<string[]> {
   return listNonEmptyCategories(locale);
 }
 
+// /categories/ 목록 페이지에 노출할 카테고리와 글 수
+// 실제로 페이지가 생성되는 카테고리만 반환한다 — 생성되지 않는 카테고리를
+// 링크하면 내부 링크가 404가 된다
+export async function listDisplayCategories(
+  locale: Locale
+): Promise<{ category: string; count: number }[]> {
+  const [categories, generated] = await Promise.all([
+    listCategories(locale),
+    listCategoryParams(locale),
+  ]);
+  const allowed = new Set(generated);
+  return categories.filter(({ category }) => allowed.has(category));
+}
+
 // 특정 카테고리 페이지가 존재하는 로케일 목록
 export async function localesWithCategory(category: string): Promise<Locale[]> {
   if (!isValidCategory(category)) return [];

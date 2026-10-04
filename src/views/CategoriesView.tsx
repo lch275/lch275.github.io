@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { listCategories } from "@/lib/posts";
+import { listDisplayCategories } from "@/lib/routes";
 import { getDictionary, localePath, type Locale } from "@/lib/i18n";
 
 interface Props {
@@ -8,7 +8,7 @@ interface Props {
 
 export default async function CategoriesView({ locale }: Props) {
   const dict = getDictionary(locale);
-  const categories = await listCategories(locale);
+  const categories = await listDisplayCategories(locale);
 
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-12">
