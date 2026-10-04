@@ -220,23 +220,100 @@ export function extractHeadings(rawContent: string): Heading[] {
   return headings;
 }
 
-export async function getAllTags(locale: Locale): Promise<string[]> {
-  const posts = await listPosts(locale);
-  const tagSet = new Set<string>();
-  for (const post of posts) {
-    if (post.frontMatter.tags) {
-      for (const tag of post.frontMatter.tags) tagSet.add(tag);
+// 라우트 파라미터는 URL 인코딩된 형태로 전달된다.
+// 예: frontmatter의 "Script Loading"은 params.tag에 "Script%20Loading"으로 들어온다.
+// 디코딩하지 않고 비교하면 매칭에 실패해 태그 페이지가 404 내용으로 생성된다.
+export function decodeTagParam(param: string): string {
+  try {
+    return decodeURIComponent(param);
+  } catch {
+    // 잘못된 인코딩이면 원본을 그대로 쓴다
+    return param;
+  }
+}
+
+// 태그 비교용 키 — 표기(대소문자)가 섞여 있어도 같은 태그로 취급한다.
+// 이렇게 하지 않으면 "java"와 "Java"가 서로 다른 URL로 갈라져 중복 페이지가 된다.
+function tagKey(tag: string): string {
+  return decodeTagParam(tag).trim().toLowerCase();
+}
+
+// 태그 키별 대표 표기를 결정한다.
+//
+// 대표 표기는 반드시 전 로케일의 표기를 합쳐서 정해야 한다. 로케일별로 따로 정하면
+// 같은 태그가 ko에서 /tags/Java/, en에서 /en/tags/java/ 처럼 다른 경로가 되어
+// hreflang 양방향성이 깨진다.
+//
+// 표기가 여러 개면 가장 많이 쓰인 표기를 쓰고, 동수면 사전순으로 정해 결정적으로 만든다.
+async function resolveTagSpellings(): Promise<Map<string, string>> {
+  const counts = new Map<string, Map<string, number>>();
+
+  for (const locale of LOCALES) {
+    const posts = await listPosts(locale);
+    for (const post of posts) {
+      for (const tag of post.frontMatter.tags ?? []) {
+        const key = tagKey(tag);
+        const spellings = counts.get(key) ?? new Map<string, number>();
+        spellings.set(tag, (spellings.get(tag) ?? 0) + 1);
+        counts.set(key, spellings);
+      }
     }
   }
-  return Array.from(tagSet).sort();
+
+  const canonical = new Map<string, string>();
+  for (const [key, spellings] of counts) {
+    const [best] = Array.from(spellings.entries()).sort(
+      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
+    );
+    canonical.set(key, best[0]);
+  }
+  return canonical;
+}
+
+// 해당 로케일에 존재하는 태그 목록 (대표 표기, 사전순)
+export async function getAllTags(locale: Locale): Promise<string[]> {
+  const [posts, canonical] = await Promise.all([
+    listPosts(locale),
+    resolveTagSpellings(),
+  ]);
+
+  const keys = new Set<string>();
+  for (const post of posts) {
+    for (const tag of post.frontMatter.tags ?? []) keys.add(tagKey(tag));
+  }
+
+  return Array.from(keys)
+    .map((key) => canonical.get(key) ?? key)
+    .sort();
+}
+
+// 포스트의 원시 태그 표기를 대표 표기로 변환한다.
+// 원시 표기로 링크하면 대표 표기와 다를 때 생성되지 않은 URL을 가리켜 404가 된다.
+export async function canonicalizeTags(tags: string[]): Promise<string[]> {
+  const canonical = await resolveTagSpellings();
+  return tags.map((tag) => canonical.get(tagKey(tag)) ?? tag);
+}
+
+// 라우트 파라미터를 해당 로케일의 대표 태그 표기로 해석한다.
+// 그 로케일에 해당 태그가 없으면 null을 반환한다.
+export async function resolveTag(
+  locale: Locale,
+  param: string
+): Promise<string | null> {
+  const key = tagKey(param);
+  const tags = await getAllTags(locale);
+  return tags.find((tag) => tagKey(tag) === key) ?? null;
 }
 
 export async function listPostsByTag(
   locale: Locale,
   tag: string
 ): Promise<PostListItem[]> {
+  const key = tagKey(tag);
   const posts = await listPosts(locale);
-  return posts.filter((post) => post.frontMatter.tags?.includes(tag) ?? false);
+  return posts.filter(
+    (post) => post.frontMatter.tags?.some((t) => tagKey(t) === key) ?? false
+  );
 }
 
 // 날짜 값을 안전하게 ISO 형식으로 정규화하는 헬퍼 함수

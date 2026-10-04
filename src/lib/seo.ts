@@ -2,7 +2,12 @@
 // hreflang/canonical은 로케일 간 대칭이어야 하므로 생성 지점을 이 파일로 모은다.
 
 import type { Metadata } from "next";
-import { getAvailableLocales, getPostBySlug } from "@/lib/posts";
+import {
+  decodeTagParam,
+  getAvailableLocales,
+  getPostBySlug,
+  resolveTag,
+} from "@/lib/posts";
 import { localesWithCategory, localesWithTag } from "@/lib/routes";
 import { SITE_NAME, SITE_URL } from "@/lib/config";
 import {
@@ -148,17 +153,20 @@ export async function buildCategoryMetadata(
 }
 
 // 태그 상세 페이지 — 해당 태그가 달린 글이 있는 로케일만 가리킨다
+// tag는 라우트 파라미터이므로 대표 표기로 해석한 뒤 사용한다
 export async function buildTagMetadata(
   locale: Locale,
   tag: string
 ): Promise<Metadata> {
   const dict = getDictionary(locale);
+  const tagName = (await resolveTag(locale, tag)) ?? decodeTagParam(tag);
+
   return {
-    title: `#${tag} | ${SITE_NAME}`,
-    description: dict.tags.description(SITE_NAME, tag),
+    title: `#${tagName} | ${SITE_NAME}`,
+    description: dict.tags.description(SITE_NAME, tagName),
     alternates: buildAlternates(
       locale,
-      `/tags/${encodeURIComponent(tag)}`,
+      `/tags/${encodeURIComponent(tagName)}`,
       await localesWithTag(tag)
     ),
   };

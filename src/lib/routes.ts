@@ -11,6 +11,7 @@ import {
   listCategories,
   listPostsByCategory,
   listPosts,
+  resolveTag,
 } from "@/lib/posts";
 import { DEFAULT_LOCALE, localePath, LOCALES, type Locale } from "@/lib/i18n";
 
@@ -60,9 +61,10 @@ export async function localesWithCategory(category: string): Promise<Locale[]> {
 }
 
 // 특정 태그 페이지가 존재하는 로케일 목록
+// tag는 라우트 파라미터(인코딩·표기 차이 가능)이므로 resolveTag로 판정한다
 export async function localesWithTag(tag: string): Promise<Locale[]> {
   const flags = await Promise.all(
-    LOCALES.map(async (locale) => (await getAllTags(locale)).includes(tag))
+    LOCALES.map(async (locale) => (await resolveTag(locale, tag)) !== null)
   );
   return LOCALES.filter((_, index) => flags[index]);
 }

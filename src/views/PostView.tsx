@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getPostBySlug, extractHeadings } from "@/lib/posts";
+import { canonicalizeTags, getPostBySlug, extractHeadings } from "@/lib/posts";
 import { SITE_NAME, SITE_URL } from "@/lib/config";
 import {
   formatDate,
@@ -23,6 +23,8 @@ export default async function PostView({ locale, slug }: Props) {
     const post = await getPostBySlug(locale, slug);
     const dict = getDictionary(locale);
     const headings = extractHeadings(post.rawContent);
+    // 태그 링크는 대표 표기를 써야 실제 생성된 태그 페이지를 가리킨다
+    const tags = await canonicalizeTags(post.frontMatter.tags ?? []);
 
     const isUpdated = post.frontMatter.updatedAt !== post.frontMatter.createdAt;
 
@@ -93,9 +95,9 @@ export default async function PostView({ locale, slug }: Props) {
                   <span>{dict.post.readingTime(readingTime)}</span>
                 </div>
 
-                {post.frontMatter.tags && post.frontMatter.tags.length > 0 && (
+                {tags.length > 0 && (
                   <div className="flex flex-wrap gap-2 mt-3">
-                    {post.frontMatter.tags.map((tag) => (
+                    {tags.map((tag) => (
                       <Link
                         key={tag}
                         href={localePath(locale, `/tags/${tag}`)}

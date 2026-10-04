@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { listPostsByTag } from "@/lib/posts";
+import { listPostsByTag, resolveTag } from "@/lib/posts";
 import {
   formatDate,
   getDictionary,
@@ -10,14 +10,18 @@ import {
 
 interface Props {
   locale: Locale;
+  // 라우트 파라미터 (URL 인코딩된 형태일 수 있다)
   tag: string;
 }
 
 export default async function TagView({ locale, tag }: Props) {
   const dict = getDictionary(locale);
-  const posts = await listPostsByTag(locale, tag);
+  const [posts, tagName] = await Promise.all([
+    listPostsByTag(locale, tag),
+    resolveTag(locale, tag),
+  ]);
 
-  if (posts.length === 0) notFound();
+  if (posts.length === 0 || !tagName) notFound();
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8 sm:py-12">
@@ -33,7 +37,7 @@ export default async function TagView({ locale, tag }: Props) {
       </nav>
 
       <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-1">
-        #{tag}
+        #{tagName}
       </h1>
       <p className="text-gray-500 dark:text-neutral-400 mb-8">
         {dict.common.postCount(posts.length)}
