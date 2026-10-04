@@ -117,10 +117,12 @@ export function buildRootMetadata(locale: Locale): Metadata {
 }
 
 // 글 목록 페이지 — 모든 로케일에 존재한다
+// title에는 사이트명을 붙이지 않는다. 루트 메타데이터의 template("%s | ARCHIVE")이
+// 이미 붙이므로, 여기서 또 붙이면 "글 목록 | ARCHIVE | ARCHIVE"가 된다.
 export function buildPostsMetadata(locale: Locale): Metadata {
   const dict = getDictionary(locale);
   return {
-    title: `${dict.posts.title} | ${SITE_NAME}`,
+    title: dict.posts.title,
     description: dict.posts.description(SITE_NAME),
     alternates: buildAlternates(locale, "/posts", [...LOCALES]),
   };
@@ -162,7 +164,8 @@ export async function buildTagMetadata(
   const tagName = (await resolveTag(locale, tag)) ?? decodeTagParam(tag);
 
   return {
-    title: `#${tagName} | ${SITE_NAME}`,
+    // 사이트명은 루트 template이 붙인다
+    title: `#${tagName}`,
     description: dict.tags.description(SITE_NAME, tagName),
     alternates: buildAlternates(
       locale,
