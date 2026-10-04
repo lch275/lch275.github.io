@@ -106,8 +106,7 @@ export default function RootLayout({
                   'ad_user_data': 'denied',
                   'ad_personalization': 'denied',
                   'analytics_storage': 'denied',
-                  'wait_for_update': 500,
-                  'region': ['EEA']
+                  'wait_for_update': 500
                 });
                 gtag('config', 'G-EJ6VL7GRG4');
                 `,
