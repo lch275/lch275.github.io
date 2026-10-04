@@ -7,8 +7,8 @@ import Script from "next/script";
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import CookieConsent from "@/components/CookieConsent";
-import { SITE_NAME, SITE_URL } from "@/lib/config";
-import { getDictionary, HTML_LANG, type Locale } from "@/lib/i18n";
+import { SITE_NAME } from "@/lib/config";
+import { getDictionary, HTML_LANG, localeUrl, type Locale } from "@/lib/i18n";
 import { listAllRoutePaths } from "@/lib/routes";
 
 const notoSansKR = Noto_Sans_KR({
@@ -33,8 +33,9 @@ export default async function BaseLayout({ locale, children }: Props) {
     "@context": "https://schema.org",
     "@type": "WebSite",
     name: SITE_NAME,
-    url: SITE_URL,
+    url: localeUrl(locale, "/"),
     description: dict.siteDescription,
+    inLanguage: HTML_LANG[locale],
   };
 
   return (

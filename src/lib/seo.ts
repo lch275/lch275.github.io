@@ -2,14 +2,45 @@
 // hreflang/canonical은 로케일 간 대칭이어야 하므로 생성 지점을 이 파일로 모은다.
 
 import type { Metadata } from "next";
-import { getPostBySlug } from "@/lib/posts";
+import { getAvailableLocales, getPostBySlug } from "@/lib/posts";
+import { localesWithCategory, localesWithTag } from "@/lib/routes";
 import { SITE_NAME, SITE_URL } from "@/lib/config";
 import {
+  DEFAULT_LOCALE,
   getDictionary,
+  HTML_LANG,
   localeUrl,
+  LOCALES,
   OG_LOCALE,
   type Locale,
 } from "@/lib/i18n";
+
+// hreflang 주석 생성
+// Google 요건: 각 언어 버전은 자기 자신과 다른 모든 언어 버전을 함께 나열해야 하고,
+// 참조가 양방향이어야 한다. 한쪽이라도 빠지면 주석 전체가 무시된다.
+// 따라서 "실제로 존재하는 로케일 목록"을 양쪽 페이지가 동일한 함수로 구해서 쓴다.
+function buildAlternates(
+  locale: Locale,
+  path: string,
+  availableLocales: Locale[]
+): Metadata["alternates"] {
+  const languages: Record<string, string> = {};
+
+  for (const available of availableLocales) {
+    languages[HTML_LANG[available]] = localeUrl(available, path);
+  }
+
+  // 어떤 언어에도 매칭되지 않는 사용자를 위한 폴백은 기본 로케일로 둔다
+  if (availableLocales.includes(DEFAULT_LOCALE)) {
+    languages["x-default"] = localeUrl(DEFAULT_LOCALE, path);
+  }
+
+  return {
+    // canonical은 반드시 자기 자신 — 로케일 간 교차 지정하면 해당 버전이 색인에서 빠진다
+    canonical: localeUrl(locale, path),
+    languages,
+  };
+}
 
 const OG_IMAGE = { url: "/image.png", width: 1200, height: 630 };
 
@@ -54,9 +85,14 @@ export function buildRootMetadata(locale: Locale): Metadata {
     description: dict.siteDescription,
     manifest: "/manifest.json",
     icons: ICONS,
+    // 홈은 모든 로케일에 존재한다
+    alternates: buildAlternates(locale, "/", [...LOCALES]),
     openGraph: {
       type: "website",
       locale: OG_LOCALE[locale],
+      alternateLocale: LOCALES.filter((other) => other !== locale).map(
+        (other) => OG_LOCALE[other]
+      ),
       url: localeUrl(locale, "/"),
       siteName: SITE_NAME,
       title,
@@ -75,31 +111,56 @@ export function buildRootMetadata(locale: Locale): Metadata {
   };
 }
 
-// 글 목록 페이지
+// 글 목록 페이지 — 모든 로케일에 존재한다
 export function buildPostsMetadata(locale: Locale): Metadata {
   const dict = getDictionary(locale);
   return {
     title: `${dict.posts.title} | ${SITE_NAME}`,
     description: dict.posts.description(SITE_NAME),
+    alternates: buildAlternates(locale, "/posts", [...LOCALES]),
   };
 }
 
-// 카테고리 상세 페이지
-export function buildCategoryMetadata(
+// 카테고리 목록 페이지 — 모든 로케일에 존재한다
+export function buildCategoriesMetadata(locale: Locale): Metadata {
+  return {
+    title: getDictionary(locale).categories.title,
+    alternates: buildAlternates(locale, "/categories", [...LOCALES]),
+  };
+}
+
+// 카테고리 상세 페이지 — 해당 카테고리에 글이 있는 로케일만 가리킨다
+export async function buildCategoryMetadata(
   locale: Locale,
   category: string,
   isValid: boolean
-): Metadata {
+): Promise<Metadata> {
   if (!isValid) return { title: getDictionary(locale).categories.title };
-  return { title: category.toUpperCase() };
+
+  return {
+    title: category.toUpperCase(),
+    alternates: buildAlternates(
+      locale,
+      `/categories/${category}`,
+      await localesWithCategory(category)
+    ),
+  };
 }
 
-// 태그 상세 페이지
-export function buildTagMetadata(locale: Locale, tag: string): Metadata {
+// 태그 상세 페이지 — 해당 태그가 달린 글이 있는 로케일만 가리킨다
+export async function buildTagMetadata(
+  locale: Locale,
+  tag: string
+): Promise<Metadata> {
   const dict = getDictionary(locale);
   return {
     title: `#${tag} | ${SITE_NAME}`,
     description: dict.tags.description(SITE_NAME, tag),
+    alternates: buildAlternates(
+      locale,
+      `/tags/${encodeURIComponent(tag)}`,
+      await localesWithTag(tag)
+    ),
   };
 }
 
@@ -111,14 +172,20 @@ export async function buildPostMetadata(
   try {
     const { frontMatter } = await getPostBySlug(locale, slug);
     const url = localeUrl(locale, `/posts/${slug}`);
+    // 번역이 존재하는 로케일만 가리킨다 — 미번역 포스트에 hreflang을 달면
+    // 404로 이어지고 양방향성이 깨져 주석 전체가 무시된다
+    const availableLocales = await getAvailableLocales(slug);
 
     return {
       title: frontMatter.title,
       description: frontMatter.description,
-      alternates: { canonical: url },
+      alternates: buildAlternates(locale, `/posts/${slug}`, availableLocales),
       openGraph: {
         type: "article",
         url,
+        alternateLocale: availableLocales
+          .filter((other) => other !== locale)
+          .map((other) => OG_LOCALE[other]),
         title: frontMatter.title,
         description: frontMatter.description,
         publishedTime: frontMatter.createdAt,

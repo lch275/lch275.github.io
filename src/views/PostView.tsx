@@ -5,6 +5,7 @@ import { SITE_NAME, SITE_URL } from "@/lib/config";
 import {
   formatDate,
   getDictionary,
+  HTML_LANG,
   localePath,
   localeUrl,
   type Locale,
@@ -36,6 +37,7 @@ export default async function PostView({ locale, slug }: Props) {
       datePublished: post.frontMatter.createdAt,
       dateModified: post.frontMatter.updatedAt,
       url: localeUrl(locale, `/posts/${slug}`),
+      inLanguage: HTML_LANG[locale],
       publisher: {
         "@type": "Organization",
         name: SITE_NAME,
