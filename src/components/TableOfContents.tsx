@@ -2,12 +2,15 @@
 
 import { useEffect, useState } from "react";
 import type { Heading } from "@/app/posts/utils";
+import { getDictionary, type Locale } from "@/lib/i18n";
 
 interface Props {
   headings: Heading[];
+  locale: Locale;
 }
 
-export default function TableOfContents({ headings }: Props) {
+export default function TableOfContents({ headings, locale }: Props) {
+  const dict = getDictionary(locale);
   const [activeId, setActiveId] = useState<string>("");
 
   useEffect(() => {
@@ -35,9 +38,9 @@ export default function TableOfContents({ headings }: Props) {
   if (headings.length === 0) return null;
 
   return (
-    <nav aria-label="목차">
+    <nav aria-label={dict.common.tableOfContents}>
       <p className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-neutral-400 mb-3">
-        목차
+        {dict.common.tableOfContents}
       </p>
       <ul className="space-y-1.5">
         {headings.map((h) => (

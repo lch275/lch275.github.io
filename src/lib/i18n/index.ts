@@ -3,6 +3,10 @@
 // 모든 로케일 경로를 빌드 시점에 생성한다.
 
 import { SITE_URL } from "@/lib/config";
+import { ko, type Dictionary } from "./dictionaries/ko";
+import { en } from "./dictionaries/en";
+
+export type { Dictionary };
 
 // 지원 로케일 — 추가 시 이 배열과 dictionaries만 확장하면 된다
 export const LOCALES = ["ko", "en"] as const;
@@ -32,6 +36,14 @@ const DATE_LOCALE: Record<Locale, string> = {
 
 export function isValidLocale(value: string): value is Locale {
   return (LOCALES as readonly string[]).includes(value);
+}
+
+const DICTIONARIES: Record<Locale, Dictionary> = { ko, en };
+
+// 로케일별 UI 문자열 사전 반환
+// 정적 import이므로 서버 컴포넌트와 클라이언트 컴포넌트에서 모두 사용할 수 있다
+export function getDictionary(locale: Locale): Dictionary {
+  return DICTIONARIES[locale];
 }
 
 // 로케일별 내부 링크 경로 생성 (next/link href 용, 뒤 슬래시 없음)

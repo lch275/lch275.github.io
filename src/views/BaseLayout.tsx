@@ -1,0 +1,90 @@
+// 로케일별 루트 레이아웃의 공용 셸
+// <html>/<body>는 루트 레이아웃에만 올 수 있으므로, 로케일별 루트 레이아웃이
+// 이 컴포넌트를 각자의 locale로 렌더링한다.
+
+import { Noto_Sans_KR } from "next/font/google";
+import Script from "next/script";
+import SiteHeader from "@/components/SiteHeader";
+import SiteFooter from "@/components/SiteFooter";
+import CookieConsent from "@/components/CookieConsent";
+import { SITE_NAME, SITE_URL } from "@/lib/config";
+import { getDictionary, HTML_LANG, type Locale } from "@/lib/i18n";
+
+const notoSansKR = Noto_Sans_KR({
+  variable: "--font-noto-sans-kr",
+  subsets: ["latin"],
+  weight: ["400", "500", "700"],
+  display: "swap",
+  preload: false,
+});
+
+interface Props {
+  locale: Locale;
+  children: React.ReactNode;
+}
+
+export default function BaseLayout({ locale, children }: Props) {
+  const dict = getDictionary(locale);
+
+  const websiteJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    name: SITE_NAME,
+    url: SITE_URL,
+    description: dict.siteDescription,
+  };
+
+  return (
+    <html lang={HTML_LANG[locale]}>
+      {/*
+        아래 두 규칙은 "루트 레이아웃 밖"을 전제로 경고하지만, 이 컴포넌트는
+        로케일별 루트 레이아웃이 그대로 렌더링하는 셸이므로 실제로는 루트 레이아웃이다.
+        (리팩터 전후 빌드 산출물이 동일함을 확인했다)
+      */}
+      {/* eslint-disable-next-line @next/next/no-head-element */}
+      <head>
+        <meta name="msapplication-config" content="/browserconfig.xml" />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteJsonLd) }}
+        />
+        {/*
+          동의 전에는 gtag.js 스크립트 자체를 로드하지 않는다(Basic Consent Mode).
+          여기서는 dataLayer/gtag 스텁과 기본 동의 상태(전체 거부)만 등록해두고,
+          실제 스크립트 로드 및 gtag('config', ...) 호출은 사용자가 동의했을 때
+          CookieConsent 컴포넌트에서 수행한다.
+        */}
+        {/* eslint-disable-next-line @next/next/no-before-interactive-script-outside-document */}
+        <Script
+          id="google-analytics-consent-default"
+          strategy="beforeInteractive"
+          dangerouslySetInnerHTML={{
+            __html: `window.dataLayer = window.dataLayer || [];
+                function gtag(){dataLayer.push(arguments);}
+                window.gtag = gtag;
+
+                gtag('consent', 'default', {
+                  'ad_storage': 'denied',
+                  'ad_user_data': 'denied',
+                  'ad_personalization': 'denied',
+                  'analytics_storage': 'denied'
+                });
+                `,
+          }}
+        />
+      </head>
+      <body className={`${notoSansKR.variable} antialiased`}>
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-[100] focus:px-4 focus:py-2 focus:bg-white focus:text-blue-600 focus:rounded focus:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          {dict.skipToContent}
+        </a>
+        <SiteHeader locale={locale} />
+        <main id="main-content">{children}</main>
+        <SiteFooter />
+        <CookieConsent locale={locale} />
+      </body>
+    </html>
+  );
+}
