@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { PostListItem } from "@/app/posts/utils";
+import type { PostListItem } from "@/lib/posts";
 import { formatDate, localePath, type Locale } from "@/lib/i18n";
 
 interface Props {

@@ -64,12 +64,24 @@ export function localeUrl(locale: Locale, path = "/"): string {
   return `${SITE_URL}${withTrailing}`;
 }
 
+// 접두어가 붙는 로케일(기본 로케일 제외)을 경로 앞에서 걷어내기 위한 패턴
+const PREFIXED_LOCALES = LOCALES.filter((locale) => locale !== DEFAULT_LOCALE);
+const LOCALE_PREFIX_PATTERN = new RegExp(
+  `^/(?:${PREFIXED_LOCALES.join("|")})(?=/|$)`
+);
+
+// 경로에서 로케일 접두어와 뒤 슬래시를 제거해 로케일 중립 경로로 정규화
+// usePathname()은 인코딩·뒤 슬래시가 포함된 경로를 주므로 비교 전에 반드시 통과시킨다
+export function stripLocalePrefix(pathname: string): string {
+  const stripped = pathname.replace(LOCALE_PREFIX_PATTERN, "") || "/";
+  return stripped !== "/" && stripped.endsWith("/")
+    ? stripped.slice(0, -1)
+    : stripped;
+}
+
 // 로케일 간 경로 변환 — 언어 스위처에서 현재 경로의 대응 경로를 계산할 때 사용
 export function switchLocalePath(pathname: string, to: Locale): string {
-  const stripped = pathname.replace(/^\/en(?=\/|$)/, "") || "/";
-  const normalized =
-    stripped !== "/" && stripped.endsWith("/") ? stripped.slice(0, -1) : stripped;
-  return localePath(to, normalized);
+  return localePath(to, stripLocalePrefix(pathname));
 }
 
 type DateStyle = "long" | "short";

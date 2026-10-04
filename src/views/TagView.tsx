@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { listPostsByTag } from "@/app/posts/utils";
+import { listPostsByTag } from "@/lib/posts";
 import {
   formatDate,
   getDictionary,

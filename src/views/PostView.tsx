@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getPostBySlug, extractHeadings } from "@/app/posts/utils";
+import { getPostBySlug, extractHeadings } from "@/lib/posts";
 import { SITE_NAME, SITE_URL } from "@/lib/config";
 import {
   formatDate,

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Heading } from "@/app/posts/utils";
+import type { Heading } from "@/lib/posts";
 import { getDictionary, type Locale } from "@/lib/i18n";
 
 interface Props {

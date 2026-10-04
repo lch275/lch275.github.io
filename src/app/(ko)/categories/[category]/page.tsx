@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import CategoryView from "@/views/CategoryView";
-import { ALL_CATEGORIES, isValidCategory } from "@/app/posts/utils";
+import { ALL_CATEGORIES, isValidCategory } from "@/lib/posts";
 import { buildCategoryMetadata } from "@/lib/seo";
 
 type PageProps = { params: Promise<{ category: string }> };

@@ -9,6 +9,7 @@ import SiteFooter from "@/components/SiteFooter";
 import CookieConsent from "@/components/CookieConsent";
 import { SITE_NAME, SITE_URL } from "@/lib/config";
 import { getDictionary, HTML_LANG, type Locale } from "@/lib/i18n";
+import { listAllRoutePaths } from "@/lib/routes";
 
 const notoSansKR = Noto_Sans_KR({
   variable: "--font-noto-sans-kr",
@@ -23,8 +24,10 @@ interface Props {
   children: React.ReactNode;
 }
 
-export default function BaseLayout({ locale, children }: Props) {
+export default async function BaseLayout({ locale, children }: Props) {
   const dict = getDictionary(locale);
+  // 언어 스위처가 존재하지 않는 경로로 링크하지 않도록 빌드 시점 경로 목록을 넘긴다
+  const availablePaths = await listAllRoutePaths();
 
   const websiteJsonLd = {
     "@context": "https://schema.org",
@@ -80,7 +83,7 @@ export default function BaseLayout({ locale, children }: Props) {
         >
           {dict.skipToContent}
         </a>
-        <SiteHeader locale={locale} />
+        <SiteHeader locale={locale} availablePaths={availablePaths} />
         <main id="main-content">{children}</main>
         <SiteFooter />
         <CookieConsent locale={locale} />

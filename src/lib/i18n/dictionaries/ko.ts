@@ -4,6 +4,9 @@
 
 export const ko = {
   // 사이트 공통
+  // languageName은 "그 언어 자신의 표기" — 언어 스위처 레이블로 사용한다
+  // (해당 언어만 읽는 방문자도 알아볼 수 있어야 하므로 번역하지 않는다)
+  languageName: "한국어",
   siteTagline: "개발자의 기록과 회고",
   siteDescription:
     "개인 IT 관련 기술 학습 및 트러블슈팅의 경험을 공유하는 개발자 블로그입니다. 프론트엔드, 백엔드, 인프라 등 다양한 기술 분야의 실무 경험과 문제 해결 과정을 기록합니다.",
@@ -14,7 +17,7 @@ export const ko = {
     label: "주요 내비게이션",
     posts: "글 목록",
     categories: "카테고리",
-    switchLanguage: "English로 보기",
+    switchTo: (language: string) => `${language}로 보기`,
   },
 
   // 공통 요소

@@ -1,0 +1,142 @@
+---
+title: Why a Spring Boot service burned excess CPU, and how I fixed it
+createdAt: 2026-04-06
+updatedAt: 2026-04-06
+description: An analysis of why a Spring Boot service consumed excessive CPU. Explains how the combination of jasypt-spring-boot and Spring Session leads to a CPU problem, centered on the caching behavior of ClassUtils.forName().
+category: backend
+tags:
+  - spring-boot
+  - java
+  - jasypt
+  - spring-session
+  - troubleshooting
+---
+
+## 1. Introduction
+
+Some of the Java services we run in production showed noticeably higher CPU usage than other services in the same cluster. Under normal conditions everything worked fine, but the problem surfaced whenever traffic spiked.
+
+The first thing to establish was what exactly was consuming all that CPU.
+
+This post covers:
+
+- How I approached the CPU problem by separating it from traffic
+- How I pinpointed the bottleneck with JFR (Java Flight Recorder)
+- Why the combination of `jasypt-spring-boot` and Spring Session led to a CPU problem
+- What role the ClassLoader's caching behavior plays in all of this
+
+## 2. Narrowing down the cause
+
+### 2.1 Correlating traffic with CPU
+
+I compared AWS API Gateway request volume against pod CPU usage hour by hour. Even during periods with almost no traffic, CPU on the affected services stayed high relative to the others.
+
+That was the key clue. If CPU usage scales with traffic, the problem most likely stems from how the service handles requests. But if CPU stays high even when there is virtually no traffic, something unrelated to traffic is driving it.
+
+### 2.2 Pinpointing the bottleneck with JFR
+
+I picked a low-traffic window and collected JFR recordings from both a high-CPU service and a low-CPU one.
+
+Comparing the two recordings made the difference obvious. On the high-CPU service, `char[]` allocation reached roughly 3 GB over 60 seconds. The call tree pointed to this path:
+
+```
+Spring Session → RedisIndexedSessionRepository
+  → session expiration event handling
+    → jasypt-spring-boot: RefreshScopeRefreshedEventListener.isAssignable()
+```
+
+Events being published when a session expires is perfectly normal. What was unexpected was seeing Jasypt's refresh-related listener invoked along that event-handling path — especially because `RefreshScope` is a Spring Cloud feature, and this service was not using Spring Cloud at all.
+
+## 3. Reading the code
+
+### 3.1 Why the listener gets registered
+
+`jasypt-spring-boot 3.0.3` auto-registers `RefreshScopeRefreshedEventListener` — which detects Spring Cloud refresh events and refreshes the encrypted property source cache — **whether or not you use Spring Cloud**.
+
+This was a regression introduced in 3.0.3. Up through 3.0.2, `CachingConfiguration` carried this condition:
+
+```java
+@ConditionalOnClass(name = REFRESHED_EVENT_CLASS)
+public RefreshScopeRefreshedEventListener refreshScopeRefreshedEventListener(...) { ... }
+```
+
+Thanks to that annotation, the listener was never registered if the Spring Cloud classes were absent from the classpath. In 3.0.3 the condition was removed, so the listener is now registered unconditionally, even in environments without Spring Cloud.
+
+### 3.2 How the listener filters events
+
+The problem does not stop at the listener being registered. You have to look at how it filters events.
+
+```java
+public class RefreshScopeRefreshedEventListener implements ApplicationListener<ApplicationEvent> {
+
+    public static final String REFRESHED_EVENT_CLASS =
+        "org.springframework.cloud.context.scope.refresh.RefreshScopeRefreshedEvent";
+
+    @Override
+    public void onApplicationEvent(ApplicationEvent event) {
+        if (isAssignable(event)) {
+            // refresh the encrypted property source cache
+        }
+    }
+
+    private boolean isAssignable(ApplicationEvent event) {
+        try {
+            Class<?> refreshEventClass = ClassUtils.forName(
+                REFRESHED_EVENT_CLASS,
+                this.getClass().getClassLoader()
+            );
+            return refreshEventClass.isAssignableFrom(event.getClass());
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
+    }
+}
+```
+
+Because it implements `ApplicationListener<ApplicationEvent>`, it receives **every ApplicationEvent**. And for each one it calls `ClassUtils.forName()` to load Spring Cloud's `RefreshScopeRefreshedEvent` class just to decide whether the event is one it cares about.
+
+### 3.3 How ClassUtils.forName() caching behaves
+
+`ClassUtils.forName()` uses the Java ClassLoader underneath, and the ClassLoader has one important characteristic.
+
+**Classes that load successfully are cached.** Once a class has been loaded, it is held inside the ClassLoader and later requests return immediately.
+
+**Failed loads, on the other hand, are not cached.** When a `ClassNotFoundException` is thrown, the ClassLoader does not remember that fact. The next request for the same class name scans the classpath again from scratch. This is by design: caching failed lookups would leave the JVM open to a DoS attack where an attacker floods it with nonexistent class names to poison the cache.
+
+On top of that, class loading is **synchronized per class name**. Only one thread at a time may attempt to load a given class name.
+
+Put those two characteristics together and you get this difference:
+
+| Environment            | ClassUtils.forName() behavior                                                                                           |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| With Spring Cloud      | First call loads the class successfully → stored in the ClassLoader cache → later calls return straight from the cache   |
+| Without Spring Cloud   | Every call scans the entire classpath → ClassNotFoundException → nothing is cached → the next call repeats all of it     |
+
+In other words, not using Spring Cloud does not make you safe. **Precisely because you are not using it, every single event takes the slow path.**
+
+### 3.4 Why Redis-backed sessions amplified the problem
+
+Had the listener merely been registered, the cost might have stayed small, because Spring's `ApplicationEvent` is published fairly rarely over an application's lifecycle.
+
+Spring Session plus Redis changes that story. `RedisIndexedSessionRepository` publishes an `ApplicationEvent` every time a session is created, expires, or is deleted. In a service with active users, those events never stop coming.
+
+```
+user session expires
+→ RedisIndexedSessionRepository publishes SessionDeletedEvent
+→ RefreshScopeRefreshedEventListener.onApplicationEvent() is called
+→ attempts ClassUtils.forName("...RefreshScopeRefreshedEvent", ...)
+→ ClassNotFoundException (no Spring Cloud)
+→ nothing cached, so the next session event repeats the whole thing
+```
+
+In this setup, session events become a trigger that continuously generates `ClassNotFoundException` cost. That is why CPU stayed high even during low-traffic windows: sessions expire naturally whether or not any traffic is arriving.
+
+## 4. Wrapping up
+
+"A global event listener in jasypt-spring-boot 3.0.3 was throwing a `ClassNotFoundException` on every event, without Spring Cloud present, and burning CPU doing it."
+
+Reaching that conclusion took several stages of analysis: correlating traffic against CPU by time of day, comparing JFR call trees, and tracing through the library's source.
+
+Two things stood out. First, the ClassLoader's lack of negative caching is a deliberate security decision, but if you do not know about it, it is hard to understand why this class of performance problem happens at all. Second, the structure is counterintuitive: *not* using Spring Cloud is what pushed the code onto the slower path. It is worth examining what assumptions a library operates under, and how those assumptions mesh with your actual environment, before adopting it.
+
+This problem was filed as [issue #250](https://github.com/ulisesbocchio/jasypt-spring-boot/issues/250) on the `jasypt-spring-boot` GitHub repository, and was fixed in 3.0.4 by restoring `@ConditionalOnClass`.

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { listCategories } from "@/app/posts/utils";
+import { listCategories } from "@/lib/posts";
 import { getDictionary, localePath, type Locale } from "@/lib/i18n";
 
 interface Props {

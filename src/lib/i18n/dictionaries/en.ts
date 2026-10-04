@@ -4,6 +4,7 @@
 import type { Dictionary } from "./ko";
 
 export const en: Dictionary = {
+  languageName: "English",
   siteTagline: "Notes and retrospectives from a developer",
   siteDescription:
     "A developer blog sharing what I learn and troubleshoot while building software. Write-ups of real-world problems and how they were solved across frontend, backend, and infrastructure.",
@@ -13,7 +14,7 @@ export const en: Dictionary = {
     label: "Main navigation",
     posts: "Posts",
     categories: "Categories",
-    switchLanguage: "한국어로 보기",
+    switchTo: (language: string) => `View in ${language}`,
   },
 
   common: {

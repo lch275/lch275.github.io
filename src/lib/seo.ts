@@ -2,7 +2,7 @@
 // hreflang/canonical은 로케일 간 대칭이어야 하므로 생성 지점을 이 파일로 모은다.
 
 import type { Metadata } from "next";
-import { getPostBySlug } from "@/app/posts/utils";
+import { getPostBySlug } from "@/lib/posts";
 import { SITE_NAME, SITE_URL } from "@/lib/config";
 import {
   getDictionary,

@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import PostView from "@/views/PostView";
-import { getPostSlugs } from "../utils";
+import { getPostSlugs } from "@/lib/posts";
 import { buildPostMetadata } from "@/lib/seo";
 
 type PageProps = { params: Promise<{ slug: string }> };

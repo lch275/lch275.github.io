@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { isValidCategory, listPostsByCategory } from "@/app/posts/utils";
+import { isValidCategory, listPostsByCategory } from "@/lib/posts";
 import PostCard from "@/components/PostCard";
 import { getDictionary, localePath, type Locale } from "@/lib/i18n";
 

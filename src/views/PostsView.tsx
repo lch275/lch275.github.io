@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { listPosts } from "@/app/posts/utils";
+import { listPosts } from "@/lib/posts";
 import {
   formatDate,
   getDictionary,

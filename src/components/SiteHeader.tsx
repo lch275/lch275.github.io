@@ -3,12 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { getDictionary, localePath, type Locale } from "@/lib/i18n";
+import LanguageSwitcher from "@/components/LanguageSwitcher";
 
 interface Props {
   locale: Locale;
+  availablePaths: string[];
 }
 
-export default function SiteHeader({ locale }: Props) {
+export default function SiteHeader({ locale, availablePaths }: Props) {
   const pathname = usePathname();
   const dict = getDictionary(locale);
 
@@ -47,6 +49,11 @@ export default function SiteHeader({ locale }: Props) {
               </Link>
             );
           })}
+          <span
+            aria-hidden="true"
+            className="w-px h-4 bg-gray-200 dark:bg-neutral-700"
+          />
+          <LanguageSwitcher locale={locale} availablePaths={availablePaths} />
         </div>
       </nav>
     </header>
