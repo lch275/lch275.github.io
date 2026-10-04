@@ -1,0 +1,334 @@
+---
+title: Why a signature-verification library failed inside a Spring Boot fat jar
+createdAt: 2026-03-28
+updatedAt: 2026-04-06
+description: An analysis of why a signature-verification library failed in a Spring Boot boot jar. Explains how the nested jar structure and its class-loading model collide with security libraries, and how I solved it by switching launchers and moving the jar to an external libs directory.
+category: backend
+tags:
+  - spring-boot
+  - java
+  - boot-jar
+  - propertieslauncher
+  - troubleshooting
+---
+
+## 1. Introduction
+
+On public-sector projects in Korea, every cryptographic module has to be a product that has passed [KCMVP](https://seed.kisa.or.kr/kisa/kcmvp/EgovSummary.do) validation — the government's cryptographic module validation program. That means you often end up using a vendor-supplied jar rather than an open-source library.
+
+I'm writing down what happened while integrating one of those, in the hope that nobody else loses the time I did.
+
+This post covers:
+
+- How a `boot jar` is structured and how it actually works
+- What assumptions a crypto module's signature verification makes
+- Why those assumptions can break inside a `boot jar`
+- How I applied `PropertiesLauncher` to work around it
+
+## 2. The structure and mechanics of a boot jar
+
+A Spring Boot `boot jar` has the following layout:
+
+```
+app.jar
+├── META-INF/
+│   └── MANIFEST.MF
+├── org/springframework/boot/loader/...
+├── BOOT-INF/
+│   ├── classes/
+│   │   └── com/example/DemoApplication.class
+│   └── lib/
+│       ├── crypto-module.jar
+│       ├── bcpkix.jar
+│       └── bcprov.jar
+```
+
+The important detail is that dependency libraries go under `BOOT-INF/lib` as **nested jars**, exactly as they are. They are not independent jars sitting on an ordinary filesystem — they are jars inside a jar.
+
+### 2-1 How Spring Boot Loader starts the application
+
+A Spring Boot executable jar does not run your application's `main()` directly. A `Launcher` runs first, assembles the classpath, and only then calls the application's `main()`. The `MANIFEST.MF` looks something like this:
+
+```
+Main-Class: org.springframework.boot.loader.JarLauncher
+Start-Class: com.lch275.DemoApplication
+```
+
+Simplified, the startup flow is:
+
+```
+java -jar app.jar
+→ JarLauncher runs
+→ scans BOOT-INF/classes and BOOT-INF/lib
+→ builds a dedicated ClassLoader
+→ runs Start-Class
+```
+
+## 3. Where signature-verification libraries collide with boot jars
+
+### 3.1 What the verification library assumes
+
+Crypto modules and security libraries often check whether they themselves are a signed JAR, or inspect the `CodeSource` and certificate chain of the loaded code.
+
+Here is a simplified example:
+
+```java
+package com.example.security;
+
+import java.security.CodeSource;
+import java.security.ProtectionDomain;
+import java.security.cert.Certificate;
+import java.security.cert.X509Certificate;
+
+public final class ModuleIntegrityVerifier {
+
+    private ModuleIntegrityVerifier() {}
+
+    public static void verify(Class<?> targetClass) {
+        ProtectionDomain pd = targetClass.getProtectionDomain();
+        CodeSource codeSource = pd.getCodeSource();
+
+        if (codeSource == null) {
+            throw new IllegalStateException("No CodeSource available.");
+        }
+
+        Certificate[] certs = codeSource.getCertificates();
+        if (certs == null || certs.length == 0) {
+            throw new SecurityException("No signing certificate found.");
+        }
+
+        boolean trusted = false;
+        for (Certificate cert : certs) {
+            if (cert instanceof X509Certificate x509) {
+                String subject = x509.getSubjectX500Principal().getName();
+                if (subject.contains("CN=MyTrustedSigner")) {
+                    trusted = true;
+                    break;
+                }
+            }
+        }
+
+        if (!trusted) {
+            throw new SecurityException("Signer is not allowed.");
+        }
+    }
+}
+```
+
+### 3.2 Why those assumptions can break in a boot jar
+
+Verification that goes no further than reading `Certificate[]` generally works fine in a boot jar too.
+
+The problem is a library that assumes **it is an independent JAR on the filesystem**. Consider code like this:
+
+```java
+package com.example.security;
+
+import java.net.URL;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.jar.JarFile;
+
+public final class NaiveJarVerifier {
+
+    private NaiveJarVerifier() {}
+
+    public static void verifyOwnJar(Class<?> targetClass) throws Exception {
+        URL location = targetClass.getProtectionDomain()
+                                  .getCodeSource()
+                                  .getLocation();
+
+        // Inside a boot jar, location looks like this:
+        // jar:file:/path/to/app.jar!/BOOT-INF/lib/crypto-module.jar!/
+        // That URL cannot be converted with Paths.get(location.toURI()).
+        // → FileSystemNotFoundException
+        Path jarPath = Paths.get(location.toURI());
+
+        try (JarFile jarFile = new JarFile(jarPath.toFile())) {
+            if (jarFile.getManifest() == null) {
+                throw new SecurityException("No MANIFEST present.");
+            }
+        }
+    }
+}
+```
+
+This code assumes:
+
+- `CodeSource.getLocation()` returns an **actual filesystem path**
+- that path is the **library's own standalone JAR file**
+- it can be opened with `new JarFile(...)`
+
+But inside a `boot jar`, a nested jar's `CodeSource.getLocation()` returns this form:
+
+```
+jar:file:/path/to/app.jar!/BOOT-INF/lib/crypto-module.jar!/
+```
+
+That URL cannot be converted via `Paths.get(location.toURI())`. You either get a `java.nio.file.FileSystemNotFoundException`, or — if the conversion does succeed — it resolves to the outer jar path (`app.jar`), producing something entirely different from what the library expected.
+
+The resulting failure modes look like this:
+
+| Expected behavior                                | What actually happens in a boot jar            |
+| ------------------------------------------------ | ---------------------------------------------- |
+| `new JarFile(jarPath.toFile())` succeeds         | `FileSystemNotFoundException`                  |
+| `CodeSource.getLocation()` → own JAR path        | outer jar (`app.jar`) or a nested URL          |
+| `Certificate[]` loads normally                   | may be null, depending on nested URL handling  |
+| Signature verifiable with `jarsigner`            | verified against the outer jar instead         |
+
+### 3.3 How you verify the signed JAR itself
+
+A signed JAR carries signature metadata alongside the class files:
+
+```text
+META-INF/MANIFEST.MF
+META-INF/SIGNER.SF
+META-INF/SIGNER.RSA
+```
+
+During development you verify it directly with `jarsigner`:
+
+```bash
+# basic verification
+jarsigner -verify -verbose -certs crypto-module.jar
+
+# stricter verification
+jarsigner -verify -strict -verbose -certs crypto-module.jar
+```
+
+The key point is that **verifying the JAR file itself works fine** — the trouble starts once that signed JAR is placed inside a `boot jar` as a nested jar, where the library's runtime verification logic can no longer rely on the same assumptions.
+
+---
+
+## 4. Solutions
+
+Since the heart of the problem is that **the library assumes a "standalone JAR file"**, there are two directions to take:
+
+1. Unpack that library to a real filesystem path at runtime (`requiresUnpack`)
+2. Keep it out of the jar entirely, in an external `libs/` directory added to the classpath (`PropertiesLauncher`)
+
+### 4.1 Option 1: requiresUnpack
+
+`requiresUnpack` is an official Spring Boot feature that unpacks a given JAR into a temporary directory at startup, **giving it a filesystem path**. It solves the problem while preserving single-file `boot jar` deployment, which makes it the better fit in most cases.
+
+```gradle
+// build.gradle (Groovy DSL)
+tasks.named("bootJar") {
+    requiresUnpack("**/crypto-module.jar")
+}
+```
+
+```kotlin
+// build.gradle.kts (Kotlin DSL)
+tasks.named<BootJar>("bootJar") {
+    requiresUnpack("**/crypto-module.jar")
+}
+```
+
+At runtime, Spring Boot Loader unpacks the JAR into a temporary location such as `$TMPDIR/spring-boot-libs/` and loads it from there. From the library's point of view it now has a real file path, so `CodeSource.getLocation()` returns a valid `file:` URL.
+
+### 4.2 Option 2: PropertiesLauncher with an external libs directory
+
+Instead of leaving the library to verify as a nested jar under `BOOT-INF/lib`, you place it as a **real JAR file in an external `libs/` directory**.
+
+`PropertiesLauncher` can add external directories to the classpath through `loader.path`.
+
+#### Gradle configuration
+
+```gradle
+// build.gradle (Groovy DSL)
+tasks.named("bootJar") {
+    manifest {
+        attributes(
+            "Main-Class": "org.springframework.boot.loader.PropertiesLauncher"
+            // Start-Class is set automatically by the Spring Boot plugin
+        )
+    }
+    // exclude the library from the boot jar
+    exclude("BOOT-INF/lib/crypto-module.jar")
+}
+
+tasks.register("copySecureLibs", Copy) {
+    // copy only the selected library out to the external libs directory
+    from(configurations.runtimeClasspath.filter {
+        it.name.contains("crypto-module")
+    })
+    into("${buildDir}/libs/libs")
+}
+
+tasks.named("bootJar") {
+    dependsOn("copySecureLibs")
+}
+```
+
+The build output ends up looking like this:
+
+```text
+build/libs/
+├── app.jar          ← boot jar (crypto-module.jar excluded)
+└── libs/
+    └── crypto-module.jar   ← a real filesystem path
+```
+
+#### Running it
+
+```bash
+# pass loader.path as a system property or via loader.properties
+java -Dloader.path=libs -jar build/libs/app.jar
+```
+
+You can also put a `loader.properties` file at the classpath root:
+
+```properties
+# src/main/resources/loader.properties
+loader.path=libs
+```
+
+> **Note**: the `Loader-Path` header in `MANIFEST.MF` is not officially supported, so `loader.path` must be passed as a system property or through `loader.properties`.
+
+#### Trade-offs of option 2
+
+| Aspect | Detail                                                                        |
+| ------ | ----------------------------------------------------------------------------- |
+| Pro    | The security module exists as a real file JAR, so its integrity can be verified independently |
+| Con    | The deployment artifact is no longer a single jar                             |
+| Con    | A missing `libs/` fails immediately with `ClassNotFoundException`             |
+| Con    | The release procedure needs an extra directory-setup step                     |
+
+### 4.3 Which one to choose
+
+In general:
+
+- **`requiresUnpack`**: if you want to keep single-jar deployment and the library behaves correctly once unpacked, start here
+- **`PropertiesLauncher`**: use this if unpacking alone doesn't fix it, or if the library has to sit explicitly at a specific file path
+
+In my case we ship a built Docker image, so there was no hard requirement to keep a single-jar deployment — and the vendor warned that using their module in fat jar form could trigger bugs. So I went with `PropertiesLauncher`.
+
+## 5. Retrospective: how Spring Boot delivers functionality
+
+Until I hit this problem, I understood Spring Boot's `boot jar` as roughly "an executable JAR with the dependencies included."
+
+In reality it is far more specific than that.
+
+- A `boot jar` is not merely the result of zipping things together
+- `JarLauncher` assembles the runtime classpath
+- The mechanism for delivering dependencies itself differs from running an ordinary JAR
+- **So some libraries simply do not work correctly on top of that abstraction**
+
+The root of the problem was not "this security library is weird." It was that **the way Spring Boot delivers application functionality and the loading model the library expected were different things**.
+
+Whenever a framework wraps a capability and hands it to you, it's worth checking whether that delivery mechanism conflicts with what your libraries assume. Spring Boot automates a great deal, but that automation only holds **on top of one particular execution model**.
+
+---
+
+## 6. Wrapping up
+
+To summarize:
+
+- A `boot jar` is an execution model built on `nested jar`s
+- Some signature-verification libraries assume a **standalone JAR file**
+- A nested jar's `CodeSource.getLocation()` returns the form `jar:file:/app.jar!/BOOT-INF/lib/...`, which cannot be converted into a filesystem path
+- You resolve the conflict with either `requiresUnpack` (keeping a single jar) or `PropertiesLauncher` plus an external `libs/` directory
+- Both strategies restore the same thing for the library: the assumption that it is a standalone JAR on the filesystem
+
+Spring Boot is not magic; it provides a runtime delivery mechanism. Understanding what that mechanism is gives you the leverage to find the cause quickly when something unexpected goes wrong.

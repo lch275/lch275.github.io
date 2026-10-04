@@ -1,0 +1,486 @@
+---
+title: Loading third-party JS safely in a SPA — from browser mechanics to a shared utility
+createdAt: 2026-04-14
+updatedAt: 2026-04-14
+description: The root cause of the timing problems that show up when you inject a third-party JS SDK dynamically in a SPA, and the design of a shared utility that combines DOM-event-based polling with retries.
+category: frontend
+tags:
+  - SPA
+  - JavaScript
+  - Browser
+  - Script Loading
+---
+
+## 1. Introduction
+
+Work on enough projects and you will have to drop a vendor's JS SDK straight into a `<script>` tag and use it as-is. Maps, payments, chat widgets — most third-party modules arrive this way.
+
+The trouble is that most of these libraries were built on **assumptions from the MPA (Multi Page Application) era**. They assume an environment where `<script>` is re-evaluated on every page load and `window.SomeSDK` is always freshly initialized.
+
+But our service is a SPA. A page transition is a router transition, not an actual page load; `<script>` is evaluated once; and the `window` object stays alive across all of it. That gap produced the same symptoms over and over:
+
+- On first entry to certain routes, `window.XxxSDK is undefined`
+- From the second entry onward it works fine
+- Reproduction rate goes up on slow networks (mobile especially)
+- One teammate solved it with `setTimeout(..., 300)`, another with `onload`, another with a `while` poll
+
+Because everyone solved it independently, every incident got a different response, and on some screens the error was shown to users raw. So I consolidated the problem into a **shared utility** and rolled it out across the team. This is a record of that process.
+
+This post covers:
+
+- How the browser loads and evaluates `<script>` (per MDN)
+- Why that behavior *feels* different between MPAs and SPAs
+- Why "finished loading" and "ready to use" are different concepts
+- How to determine readiness from DOM events
+- How to tie retries and user-facing error reporting together consistently
+
+## 2. How the browser loads `<script>`
+
+First, what happens when the browser is parsing HTML and hits a `<script>`. The basis here is the [MDN `<script>` element documentation](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script) and the HTML specification.
+
+### 2.1 Default behavior: parser-blocking
+
+A plain `<script src="...">` with none of `async`, `defer`, or `type="module"` **stops the parser**. Per [MDN](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script#blocking), a classic script with no special attributes blocks **parsing, not rendering**, when `type="module"`, `async`, and `defer` are all absent. The browser pauses HTML parsing, downloads and evaluates the script, and only then resumes building the DOM.
+
+This behavior exists to safely preserve two guarantees: that scripts **execute in document order**, and that any inline script or DOM that follows may depend on an earlier script's results.
+
+### 2.2 `async`: download in parallel, execute as soon as it's ready
+
+An external classic script with the `async` attribute downloads in parallel with parsing, and is **evaluated as soon as the download finishes**. It may execute before parsing has completed.
+
+One characteristic matters a lot here: multiple `async` scripts **make no guarantee about their relative order**. Whichever finishes downloading first runs first, regardless of document order (load-first order). That makes `async` suitable for independent scripts with no dependencies — analytics, ads, and the like.
+
+### 2.3 `defer`: download in parallel, execute in order after parsing
+
+`defer` also downloads in parallel with parsing, but **execution is deferred until document parsing has finished**. Per [MDN](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script#defer), `defer` scripts run after parsing completes and before the `DOMContentLoaded` event fires. When there are several `defer` scripts, they are guaranteed to **execute in the order they appear in the document**.
+
+So `defer` suits scripts that need to run in order, at the point the DOM is complete.
+
+Summarized, roughly:
+
+| Attribute      | Download         | Execution                                     | Order guaranteed | Blocks parsing |
+| -------------- | ---------------- | --------------------------------------------- | ---------------- | -------------- |
+| none (default) | the moment it's hit | immediately after download                 | document order   | Yes            |
+| `async`        | parallel         | immediately after download                    | No               | No             |
+| `defer`        | parallel         | after parsing, before `DOMContentLoaded`      | Yes              | No             |
+
+### 2.4 The `DOMContentLoaded` and `load` events
+
+Per MDN's definitions, the two events mean different things:
+
+- **[`DOMContentLoaded`](https://developer.mozilla.org/en-US/docs/Web/API/Document/DOMContentLoaded_event)**: fires once HTML parsing is complete and `defer` scripts plus module scripts have finished executing. It does not wait for images, iframes, or `async` scripts.
+- **[`load`](https://developer.mozilla.org/en-US/docs/Web/API/Window/load_event)**: fires once the whole page has loaded — stylesheets, scripts (including `async`, `defer`, and modules), iframes, and images all done.
+
+There's one important detail here. MDN states explicitly that **a dynamically injected script, or a `<script async>`, may execute at a point where `DOMContentLoaded` has already fired**. Attaching a `DOMContentLoaded` listener inside such a script can therefore be meaningless; you need to check `document.readyState` instead.
+
+That fact matters enormously in a SPA. The moment we attach a script with `document.createElement('script')` on route entry, that script loads long after `DOMContentLoaded` has passed. The notion of "document load time" is no longer a usable basis for deciding whether a third-party script is ready.
+
+### 2.5 The `load` / `error` events on individual script elements
+
+So for dynamic injection, the actual basis is **the events on the individual `<script>` element**. MDN's [`HTMLScriptElement`](https://developer.mozilla.org/en-US/docs/Web/API/HTMLScriptElement) documentation describes this behavior:
+
+- If the script is served with an allowed MIME type and evaluates normally, a `load` event is dispatched on that element.
+- If it is served with a blocked MIME type such as image/video/audio/CSV, or cannot be downloaded due to a network error, an `error` event is dispatched.
+
+In other words, the basis in a SPA is not the page-wide `window.load`, but the `load`/`error` events on **the specific `<script>` node we attached**.
+
+### 2.6 Dynamically injected scripts behave like "async" by default
+
+MDN and the [HTML specification](https://html.spec.whatwg.org/multipage/scripting.html#attr-script-async) carry one more important point. For a script element created with `document.createElement('script')`, the internal `force async` flag defaults to `true`. So **a dynamically inserted script executes asynchronously by default**. It guarantees nothing about document order or dependency relationships with other scripts.
+
+If you want several of them to execute in order, you have to set `script.async = false` explicitly. That changes the behavior so they execute "in insertion order, similar to document order."
+
+Which means: attaching scripts one at a time to `head` on route entry is — unless you adjust the attributes — exactly the same as tossing out a series of independent async scripts. There is no ordering guarantee between them, and they are decoupled from the page-wide lifecycle such as HTML parsing.
+
+## 3. Why third-party script loading is awkward in a SPA
+
+### 3.1 The MPA's implicit assumptions
+
+In a traditional MPA, the usage flow for a third-party SDK looks roughly like this:
+
+```html
+<!DOCTYPE html>
+<html>
+  <head>
+    <script src="https://cdn.vendor.com/sdk.js"></script>
+  </head>
+  <body>
+    <script>
+      // At this point window.VendorSDK is guaranteed to exist
+      VendorSDK.init({ ... });
+    </script>
+  </body>
+</html>
+```
+
+Measured against the browser behavior above, this model assumes:
+
+- The external script **blocks parsing when the parser hits it** and finishes evaluating
+- The inline script that follows runs afterward, so assuming `window.VendorSDK` already exists is safe
+- Page transition = document reload, so the whole process happens **from scratch** on every screen
+
+So an MPA had "script readiness" serialized for it naturally, by the parser, with no effort at all.
+
+### 3.2 The assumptions that break in a SPA
+
+In a SPA, that serialization disappears.
+
+- Put the external script in `index.html` and it is evaluated by the parser **exactly once**, at app entry
+- Put every screen-specific SDK in `index.html` and your initial load gets unacceptably heavy
+- So you normally **inject `<script>` dynamically at route entry**
+- Which puts the browser on the "dynamic insertion = async by default" path from 2.6
+- As a result, the moment the script node is attached to the DOM, the moment the JS actually finishes evaluating, and the moment `window.VendorSDK` is defined are **all separate**
+- Call `VendorSDK.init(...)` in between and you get an `undefined` reference error
+
+In a SPA, "the script is there" and "the script is usable" become **two different states**. That split is not a bug the SPA created. It is exactly what the specification says the browser does — the SPA context merely surfaced it.
+
+### 3.3 Common wrong fixes
+
+Gathering up what people on the team were using, there were roughly three patterns.
+
+**Pattern 1: fixed delay**
+
+```js
+const script = document.createElement('script');
+script.src = VENDOR_SDK_URL;
+document.head.appendChild(script);
+
+setTimeout(() => {
+  window.VendorSDK.init({ ... });
+}, 500);
+```
+
+Excessive on fast connections, insufficient on slow ones. Fails intermittently on mobile LTE/3G.
+
+**Pattern 2: `onload` only**
+
+```js
+const script = document.createElement('script');
+script.src = VENDOR_SDK_URL;
+script.onload = () => {
+  window.VendorSDK.init({ ... });
+};
+document.head.appendChild(script);
+```
+
+Works most of the time, but there are cases where `onload` fires and `window.VendorSDK` is still undefined. The next section explains why.
+
+**Pattern 3: unbounded polling**
+
+```js
+const timer = setInterval(() => {
+  if (window.VendorSDK) {
+    clearInterval(timer);
+    window.VendorSDK.init({ ... });
+  }
+}, 100);
+```
+
+With no timeout, a failure means waiting forever. The user gets no feedback at all.
+
+All three share one flaw: **they cannot recognize "failure" as a state.** They only account for the success scenario.
+
+## 4. "Finished loading" and "ready to use" are not the same thing
+
+### 4.1 What `script.onload` actually guarantees
+
+As covered in 2.5, the `load` event on an `HTMLScriptElement` fires when the browser has downloaded the external resource and **evaluation of that script block has completed normally**. So it does guarantee that the script file's own top-level execution has finished.
+
+The problem is that many third-party SDKs do not define `window.VendorSDK` immediately at top level. This structure is common:
+
+```js
+// vendor-sdk.js (simplified)
+(function () {
+  // 1. load an additional internal script
+  const inner = document.createElement("script");
+  inner.src = "https://cdn.vendor.com/sdk-core.js";
+  inner.onload = function () {
+    // 2. only now does window.VendorSDK get defined
+    window.VendorSDK = createSdk();
+  };
+  document.head.appendChild(inner);
+})();
+```
+
+Here, the outer `sdk.js` can fire `load` while the inner `sdk-core.js` is still loading. Reference `window.VendorSDK` directly in the `onload` callback and you get `undefined`.
+
+This is not the browser doing something wrong. The browser only tells you "evaluation of this `<script>` element has finished." It has no way of knowing — and no need to know — that the script internally **chains yet another asynchronous load**.
+
+### 4.2 So `onload` is not the criterion
+
+`onload` is a **necessary** condition, not a sufficient one. What we actually need to confirm is two things:
+
+1. Did the external script element attach to the DOM and evaluate properly (`load` or `error`)
+2. As a result, **does the object we will actually use exist on `window`** (`window.VendorSDK`, `window.VendorSDK.init`, and so on)
+
+Both have to be checked. And because the object may still be missing after `load`, we have to allow **short-interval polling** from that point, up to a bounded number of attempts.
+
+### 4.3 The failure paths need explicit handling too
+
+There must be a failure path:
+
+- Network error → `script.onerror` fires
+- Response with a blocked MIME type → likewise an `error` event
+- Script loaded but the object never appears → polling timeout
+- CDN responded, but with a non-200 error page → it evaluates, but no object
+
+Log these paths distinctly internally, but it's best to converge them into a **single consistent error UI** for the user.
+
+## 5. Designing the shared utility
+
+### 5.1 Requirements
+
+Pulling the analysis together, the shared utility needs to:
+
+- **Prevent duplicate `<script>` insertion** for the same `src` (in a SPA it can be called repeatedly)
+- Make its first-pass decision from the `script.load` / `script.error` DOM events
+- After `load`, **poll at a short interval** until the caller-defined "is it usable" condition becomes true
+- Have an **upper bound** on total time per attempt
+- **Retry the whole process** up to a set number of times on failure (erroring only on final failure)
+- On final failure, return an **error object that can be surfaced to the user**
+
+### 5.2 Interface sketch
+
+```ts
+interface LoadExternalScriptOptions {
+  /** Script URL. The same URL is never inserted twice. */
+  src: string;
+
+  /**
+   * Readiness predicate.
+   * After load, poll until this returns truthy.
+   * e.g. () => !!window.VendorSDK?.init
+   */
+  isReady: () => boolean;
+
+  /** isReady polling interval after load, in ms. Default 50 */
+  pollIntervalMs?: number;
+
+  /** Maximum time allowed for a single attempt, in ms. Default 5000 */
+  attemptTimeoutMs?: number;
+
+  /** Retry count. Default 2 (= 3 attempts total) */
+  maxRetries?: number;
+
+  /** Wait between retries, in ms. Default 300 */
+  retryDelayMs?: number;
+}
+
+type LoadResult =
+  | { ok: true }
+  | { ok: false; reason: "network" | "timeout" | "unknown"; cause?: unknown };
+```
+
+The key is that `isReady` is **injected by the caller**. The utility does not know what counts as ready. Only the caller that actually uses the SDK has that knowledge.
+
+### 5.3 Implementation
+
+```ts
+const inflight = new Map<string, Promise<LoadResult>>();
+
+export function loadExternalScript(
+  options: LoadExternalScriptOptions,
+): Promise<LoadResult> {
+  const {
+    src,
+    isReady,
+    pollIntervalMs = 50,
+    attemptTimeoutMs = 5000,
+    maxRetries = 2,
+    retryDelayMs = 300,
+  } = options;
+
+  // Already usable: succeed immediately
+  if (isReady()) {
+    return Promise.resolve({ ok: true });
+  }
+
+  // A load for the same src is already in flight: share its Promise
+  const existing = inflight.get(src);
+  if (existing) return existing;
+
+  const task = runWithRetry(src, isReady, {
+    pollIntervalMs,
+    attemptTimeoutMs,
+    maxRetries,
+    retryDelayMs,
+  }).finally(() => {
+    inflight.delete(src);
+  });
+
+  inflight.set(src, task);
+  return task;
+}
+
+async function runWithRetry(
+  src: string,
+  isReady: () => boolean,
+  opts: Required<Omit<LoadExternalScriptOptions, "src" | "isReady">>,
+): Promise<LoadResult> {
+  let lastReason: LoadResult = { ok: false, reason: "unknown" };
+
+  for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
+    const result = await attemptOnce(src, isReady, opts);
+    if (result.ok) return result;
+
+    lastReason = result;
+
+    // Clean up the failed element before retrying
+    removeScriptElement(src);
+
+    if (attempt < opts.maxRetries) {
+      await delay(opts.retryDelayMs);
+    }
+  }
+
+  return lastReason;
+}
+
+function attemptOnce(
+  src: string,
+  isReady: () => boolean,
+  opts: { pollIntervalMs: number; attemptTimeoutMs: number },
+): Promise<LoadResult> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let pollTimer: number | null = null;
+
+    const finish = (result: LoadResult) => {
+      if (settled) return;
+      settled = true;
+      if (pollTimer !== null) window.clearInterval(pollTimer);
+      window.clearTimeout(overallTimer);
+      resolve(result);
+    };
+
+    const overallTimer = window.setTimeout(() => {
+      finish({ ok: false, reason: "timeout" });
+    }, opts.attemptTimeoutMs);
+
+    const startPolling = () => {
+      if (isReady()) {
+        finish({ ok: true });
+        return;
+      }
+      pollTimer = window.setInterval(() => {
+        if (isReady()) finish({ ok: true });
+      }, opts.pollIntervalMs);
+    };
+
+    // Reuse an element for the same src if one already exists
+    const existingEl = document.querySelector<HTMLScriptElement>(
+      `script[data-ext-loader="${cssEscape(src)}"]`,
+    );
+    if (existingEl) {
+      startPolling();
+      return;
+    }
+
+    const el = document.createElement("script");
+    el.src = src;
+    el.async = true; // declare the default behavior explicitly
+    el.dataset.extLoader = src;
+
+    el.addEventListener("load", startPolling);
+    el.addEventListener("error", (e) => {
+      finish({ ok: false, reason: "network", cause: e });
+    });
+
+    document.head.appendChild(el);
+  });
+}
+
+function removeScriptElement(src: string) {
+  const el = document.querySelector(
+    `script[data-ext-loader="${cssEscape(src)}"]`,
+  );
+  el?.parentNode?.removeChild(el);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function cssEscape(value: string): string {
+  return window.CSS && CSS.escape
+    ? CSS.escape(value)
+    : value.replace(/"/g, '\\"');
+}
+```
+
+Briefly, each layer's responsibility:
+
+| Layer                 | Responsibility                                                        |
+| --------------------- | --------------------------------------------------------------------- |
+| `loadExternalScript`  | Merging duplicate requests, early return when already ready           |
+| `runWithRetry`        | Attempt counting, cleaning up failed elements, retry spacing          |
+| `attemptOnce`         | DOM events (`load`/`error`) + polling + per-attempt timeout           |
+| `isReady` (injected)  | The **single criterion** for "is this SDK usable"                     |
+
+### 5.4 Usage
+
+```ts
+import { loadExternalScript } from "@/common/loadExternalScript";
+import { showErrorModal } from "@/common/errorModal";
+
+async function ensureVendorSdk(): Promise<boolean> {
+  const result = await loadExternalScript({
+    src: "https://cdn.vendor.com/sdk.js",
+    isReady: () => typeof window.VendorSDK?.init === "function",
+  });
+
+  if (!result.ok) {
+    showErrorModal({
+      title: "Something went wrong while getting things ready",
+      message:
+        "Please check your network connection and try again. If the problem persists, try again in a little while.",
+      debugCode: `EXT_SDK_${result.reason.toUpperCase()}`,
+    });
+    return false;
+  }
+
+  return true;
+}
+
+// On route entry
+async function onEnterIdVerificationPage() {
+  const ready = await ensureVendorSdk();
+  if (!ready) return;
+  window.VendorSDK.init({
+    /* ... */
+  });
+}
+```
+
+What matters here is that **the calling code contains no `setTimeout`, no `onload`, and no `setInterval`**. The caller expresses only "I need this SDK" and "it is usable when this condition holds." The rest of the state machine is hidden inside the utility.
+
+## 6. What consolidating it bought us
+
+After sharing this utility with the team:
+
+- When a third-party SDK loading incident happened, **debugging converged on one place.** Previously we had to open each screen's bespoke implementation one by one.
+- The error UI shown to users became **consistent**. No more `[object Object]` on one screen and a white page on another.
+- Reproducibility issues on slow connections dropped sharply. The old `setTimeout(..., 300)` approach was environment-dependent by nature; switching to DOM events + polling + timeout made it **resilient to environmental variation**.
+- Adding a new SDK no longer involves deciding "how do we handle loading." Whoever adds it only writes an `isReady` function.
+
+## 7. Retrospective: bringing the world outside the framework inside it
+
+Until I hit this problem, I thought of third-party script loading as "just drop in a `<script>` tag." In the MPA era that was roughly accurate. The **browser's default behavior** — blocking parsing when the parser hits a script, and not running the next inline script until download and evaluation finish — was doing the "readiness synchronization" on the developer's behalf, without anyone having to think about it.
+
+That synchronization disappears in a SPA not because SPAs are strange, but because **we no longer let the parser encounter the script at all**. The moment we attach it ourselves with `document.createElement('script')` on route entry, the browser sees "a dynamically inserted script that is async by default," and it loads independently, decoupled from the document lifecycle. Exactly as the HTML spec and MDN describe.
+
+The root of the problem was not "this third-party SDK is strange." It was that **the implicit, parser-based synchronization the browser used to provide no longer happens automatically in a SPA**. When you bring a resource created outside your framework inside it, you have to **explicitly restore** the execution environment that resource originally expected. This shared utility is that restoration work, gathered into one place.
+
+Whenever a resource arrives from an outside world you don't control, putting **one thin layer at the seam** between that resource and your framework ends up being the cheapest option. Having exactly one place to fix when something breaks is reason enough on its own.
+
+## 8. Wrapping up
+
+To summarize:
+
+- The browser handles `<script>` along four different paths — parser-based, `async`, `defer`, and dynamic insertion — and **dynamically inserted scripts behave like async by default**
+- A dynamically injected script may execute after `DOMContentLoaded` has already passed, so document-level lifecycle events cannot be the criterion
+- So in a SPA, the practical criterion is **the `load`/`error` events on the individual `<script>` element**
+- But even `load` only guarantees "script evaluation finished"; "SDK usable" has to be confirmed with a separate `isReady` condition
+- Bundling the failure paths (`error`, timeout, object never defined) together with retries and user-facing errors into a **shared utility** also simplifies incident response
+
+A SPA removes the concept of a "page," and in doing so removes the browser's implicit synchronization mechanisms that came attached to it. Third-party script loading is one of them. I've come to think that **writing those vanished guarantees back ourselves** is the baseline posture for handling external resources in a SPA.

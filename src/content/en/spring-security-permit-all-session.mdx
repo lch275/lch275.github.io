@@ -1,0 +1,339 @@
+---
+title: Why permitAll() still reads the Redis session — how the Spring Security 5 filter chain works
+createdAt: 2026-04-09
+updatedAt: 2026-04-09
+category: backend
+description: An analysis of why Redis session lookups still happen even with permitAll() configured in Spring Security 5. Explains the execution flow of SecurityContextPersistenceFilter, the conceptual gap with the authorization layer, and how to stop session loading on specific paths.
+tags:
+  - spring-security
+  - spring-session
+  - redis
+  - java
+  - troubleshooting
+---
+
+## 1. Introduction
+
+When we opened up an event-page API as a public endpoint, I assumed that configuring `permitAll()` meant no session authentication was needed — and therefore no Redis session lookups either.
+
+That assumption fell apart when event traffic spiked. CPU on the Redis session server climbed to an unexpected level. Checking APM, every single request hitting `/api/event/**` was issuing a session-key lookup. Despite `permitAll()` being configured.
+
+Tracing the cause led to one fact: `permitAll()` and session loading sit on completely different execution paths in the Spring Security filter chain.
+
+This post covers:
+
+- Why `permitAll()` does not prevent session loading
+- The difference in responsibility between `SecurityContextPersistenceFilter` and `FilterSecurityInterceptor`
+- Where in the code the Redis call actually happens
+- How to block session loading entirely on specific paths
+
+## 2. Confirming the problem
+
+### 2.1 A typical permitAll() configuration
+
+Opening up the event API paths is written like this:
+
+```java
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig extends WebSecurityConfigurerAdapter {
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http
+            .authorizeRequests()
+                .antMatchers("/api/event/**").permitAll()
+                .anyRequest().authenticated()
+            .and()
+            .sessionManagement()
+                .sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED);
+    }
+}
+```
+
+Intuitively, since `/api/event/**` is `permitAll()`, it looks like requests should pass straight through without any session check, whether the caller is logged in or not.
+
+### 2.2 What Redis MONITOR actually showed
+
+Running Redis MONITOR, these commands repeat endlessly:
+
+```
+1713600000.123456 [0 10.0.0.1:51234] "GET" "spring:session:sessions:abc123def456..."
+1713600000.234567 [0 10.0.0.1:51235] "GET" "spring:session:sessions:xyz789uvw012..."
+1713600000.345678 [0 10.0.0.1:51236] "GET" "spring:session:sessions:mno345pqr678..."
+```
+
+Even for `/api/event/**` requests, every request carrying a logged-in user's session cookie triggers a Redis `GET`. The lookup count rises in exact proportion to request volume.
+
+### 2.3 The conceptual background
+
+`permitAll()` is a setting in the **authorization** layer. Session loading, by contrast, happens while preparing the **authentication** context. The two live at different positions in the filter chain, and session loading has already finished before the authorization decision is ever made.
+
+## 3. Root cause — the filter chain's execution order
+
+### 3.1 The Spring Security filter chain
+
+When an HTTP request arrives, Spring Security's filters run in order:
+
+```
+HTTP request
+  │
+  ▼
+SecurityContextPersistenceFilter    ← [1] loads SecurityContext from the session
+  │
+  ▼
+UsernamePasswordAuthenticationFilter (matching paths only)
+  │
+  ▼
+... (other filters)
+  │
+  ▼
+FilterSecurityInterceptor           ← [2] evaluates permitAll() (authorization)
+  │
+  ▼
+DispatcherServlet → Controller
+```
+
+The crucial point is that **[1] session loading comes before [2] the authorization decision**. By the time `permitAll()` is evaluated, the session has already been read.
+
+### 3.2 Comparing the two components
+
+| Category                       | Component                          | Responsibility                                                            | When it runs            |
+| ------------------------------ | ---------------------------------- | ------------------------------------------------------------------------- | ----------------------- |
+| Authentication context setup   | `SecurityContextPersistenceFilter` | Loads SecurityContext from the session into `SecurityContextHolder`       | Front of the filter chain |
+| Authorization decision         | `FilterSecurityInterceptor`        | Applies rules such as `permitAll()` and `hasRole()`                       | Back of the filter chain  |
+
+`SecurityContextPersistenceFilter` is the stage that works out "who is this caller," while `FilterSecurityInterceptor` is the stage that decides "may this caller reach this path." `permitAll()` affects only the latter.
+
+## 4. Reading the code
+
+Tracing the path where the Redis call actually occurs, against the Spring Security 5.7.x source.
+
+### 4.1 SecurityContextPersistenceFilter.doFilter()
+
+```java
+// org.springframework.security.web.context.SecurityContextPersistenceFilter
+public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
+        throws IOException, ServletException {
+
+    HttpServletRequest request = (HttpServletRequest) req;
+    HttpServletResponse response = (HttpServletResponse) res;
+
+    // ...
+
+    HttpRequestResponseHolder holder = new HttpRequestResponseHolder(request, response);
+
+    // Loads SecurityContext from the session — runs BEFORE chain.doFilter()
+    SecurityContext contextBeforeChainExecution = repo.loadContext(holder);
+
+    try {
+        SecurityContextHolder.setContext(contextBeforeChainExecution);
+
+        // The remaining filters run here,
+        // including FilterSecurityInterceptor (the permitAll decision)
+        chain.doFilter(holder.getRequest(), holder.getResponse());
+    } finally {
+        // ...
+        SecurityContextHolder.clearContext();
+    }
+}
+```
+
+The `repo.loadContext(holder)` call sits before `chain.doFilter()`. `FilterSecurityInterceptor`, which handles the `permitAll()` decision, runs inside `chain.doFilter()`. So the order is **load the session → advance the filter chain → evaluate `permitAll()`**.
+
+### 4.2 HttpSessionSecurityContextRepository.loadContext()
+
+```java
+// org.springframework.security.web.context.HttpSessionSecurityContextRepository
+public SecurityContext loadContext(HttpRequestResponseHolder requestResponseHolder) {
+    HttpServletRequest request = requestResponseHolder.getRequest();
+    HttpServletResponse response = requestResponseHolder.getResponse();
+
+    // Where Spring Session steps in.
+    // If a session cookie is present, Spring Session queries Redis here.
+    HttpSession httpSession = request.getSession(false);
+
+    SecurityContext context = readSecurityContextFromSession(httpSession);
+
+    if (context == null) {
+        context = generateNewContext();
+    }
+
+    // ...
+    return context;
+}
+```
+
+`request.getSession(false)` does not create a new session; it returns the existing one if there is one. In an environment with Spring Session enabled, this call checks the session cookie and triggers a Redis lookup. **Even on a `permitAll()` path, any request carrying a session cookie causes a Redis lookup right here.**
+
+### 4.3 HttpSessionSecurityContextRepository.readSecurityContextFromSession()
+
+```java
+// org.springframework.security.web.context.HttpSessionSecurityContextRepository
+private SecurityContext readSecurityContextFromSession(HttpSession httpSession) {
+    if (httpSession == null) {
+        return null;
+    }
+
+    // The moment getAttribute is called on the Spring Session proxy,
+    // a Redis GET is issued.
+    Object contextFromSession = httpSession.getAttribute(springSecurityContextKey);
+
+    // ...
+}
+```
+
+At the moment `httpSession.getAttribute(springSecurityContextKey)` is called, the Spring Session proxy steps in and issues the actual Redis `GET`. That is the precise point where the Redis call happens.
+
+### 4.4 The whole flow
+
+```
+[HTTP request: GET /api/event/123 (with session cookie)]
+  │
+  ▼
+SecurityContextPersistenceFilter.doFilter()
+  │
+  ├─ repo.loadContext(holder)
+  │    │
+  │    ├─ request.getSession(false)      ← where Spring Session steps in
+  │    │
+  │    └─ readSecurityContextFromSession()
+  │         │
+  │         └─ httpSession.getAttribute(springSecurityContextKey)
+  │              │
+  │              └─ Redis GET spring:session:sessions:...  ← the Redis call
+  │
+  └─ chain.doFilter()                    ← session has already been read
+       │
+       └─ FilterSecurityInterceptor
+            │
+            └─ permitAll() decision      ← access allowed here
+```
+
+By the time `permitAll()` is evaluated, the Redis lookup is already done.
+
+## 5. The fix
+
+### 5.1 Why sessionCreationPolicy(STATELESS) is not enough
+
+`STATELESS` means "do not **create** a session." If a session already exists, it is still read.
+
+```java
+// STATELESS prevents session creation.
+// But request.getSession(false) inside loadContext() means
+// "look up an existing session without creating one" — so it is not blocked.
+```
+
+In other words, "don't create" ≠ "don't read." A request carrying a logged-in user's session cookie still triggers a Redis lookup under `STATELESS`.
+
+### 5.2 The solution: @Order plus securityContext().disable()
+
+Disabling `SecurityContextPersistenceFilter` itself stops session loading from happening at all. Use `@Order` to apply a dedicated security configuration for the event API at a higher priority.
+
+```java
+// Dedicated config for the event API — needs the higher priority
+@Configuration
+@Order(1)
+public class EventApiSecurityConfig extends WebSecurityConfigurerAdapter {
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http
+            .requestMatchers()
+                .antMatchers("/api/event/**")
+            .and()
+            .authorizeRequests()
+                .anyRequest().permitAll()
+            .and()
+            // Disable SecurityContextPersistenceFilter.
+            // On this path, session loading never happens.
+            .securityContext().disable()
+            .sessionManagement()
+                .sessionCreationPolicy(SessionCreationPolicy.STATELESS);
+    }
+}
+
+// Default config covering every other path
+@Configuration
+@Order(2)
+public class DefaultSecurityConfig extends WebSecurityConfigurerAdapter {
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http
+            .authorizeRequests()
+                .anyRequest().authenticated()
+            .and()
+            .sessionManagement()
+                .sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED);
+    }
+}
+```
+
+With `.securityContext().disable()` applied, the request flow becomes:
+
+```
+[HTTP request: GET /api/event/123 (with session cookie)]
+  │
+  ▼
+EventApiSecurityConfig applies (Order=1)
+  │
+  ├─ SecurityContextPersistenceFilter → disabled (skipped)
+  │
+  └─ chain.doFilter()
+       │
+       └─ FilterSecurityInterceptor
+            │
+            └─ permitAll() decision → allowed
+
+No Redis lookup
+```
+
+### 5.3 Caveats
+
+**With `.securityContext().disable()`, `SecurityContextHolder` returns an empty context on that path.** If a controller or service handling this path reads authentication via `SecurityContextHolder.getContext().getAuthentication()`, it gets `null` — so you cannot use this approach if any logic there depends on authentication details.
+
+| Aspect                  | Detail                                                                        |
+| ----------------------- | ----------------------------------------------------------------------------- |
+| Supported versions      | Spring Security 5.4+                                                          |
+| Earlier versions        | You have to remove `SecurityContextPersistenceFilter` from the chain yourself  |
+| Authentication          | `Authentication` is always `null` on that path                                |
+| Session cookie          | No session cookie is set on the response                                      |
+
+In Spring Security 6.x, `WebSecurityConfigurerAdapter` has been removed. The equivalent code is:
+
+```java
+// Spring Security 6.x
+@Bean
+@Order(1)
+public SecurityFilterChain eventApiFilterChain(HttpSecurity http) throws Exception {
+    http
+        .securityMatcher("/api/event/**")
+        .authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
+        .securityContext(context -> context.disable())
+        .sessionManagement(session ->
+            session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
+    return http.build();
+}
+
+@Bean
+@Order(2)
+public SecurityFilterChain defaultFilterChain(HttpSecurity http) throws Exception {
+    http
+        .authorizeHttpRequests(auth -> auth.anyRequest().authenticated());
+    return http.build();
+}
+```
+
+## 6. Wrapping up
+
+`permitAll()` is an authorization-layer setting. Session loading is handled by `SecurityContextPersistenceFilter` at the very front of the filter chain. The two are on entirely different execution paths.
+
+| Layer                        | Component                          | When it runs              | Effect of permitAll() |
+| ---------------------------- | ---------------------------------- | ------------------------- | --------------------- |
+| Authentication context setup | `SecurityContextPersistenceFilter` | Front of the filter chain | None                  |
+| Authorization decision       | `FilterSecurityInterceptor`        | Back of the filter chain  | Direct                |
+
+Configuring `permitAll()` does not mean all security processing is skipped for that request. Only the authorization decision is skipped; the stage that prepares the authentication context still runs in full.
+
+Configuration can look correct and still leave a performance problem behind if you don't understand the filter chain's execution order. Load that concentrates into a single moment, like event traffic, is exactly what exposes this kind of hidden cost.
