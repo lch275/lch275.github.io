@@ -11,6 +11,7 @@ import rehypeSlug from "rehype-slug"; // HTML 헤딩에 id 속성 자동 추가
 import rehypeAutolinkHeadings from "rehype-autolink-headings"; // 헤딩에 앵커 링크 자동 생성
 import remarkGfm from "remark-gfm"; // GitHub Flavored Markdown 지원
 import GithubSlugger from "github-slugger"; // rehype-slug와 동일한 ID 생성을 위해 사용
+import { LOCALES, type Locale } from "@/lib/i18n"; // 로케일 정의
 
 // 블로그 카테고리 타입 정의 - 개발 분야별로 구분
 // 확장 가능하도록 union type으로 정의하되, 명확한 분류 체계 유지
@@ -43,25 +44,37 @@ export type Heading = {
   level: 1 | 2 | 3 | 4 | 5 | 6;
 };
 
-// 포스트 파일들이 저장된 디렉토리 경로
+// 로케일별 포스트 디렉토리 경로
 // process.cwd()를 사용하여 프로젝트 루트 기준으로 절대 경로 생성
-const POSTS_DIR = path.join(process.cwd(), "src", "content");
+function postsDir(locale: Locale): string {
+  return path.join(process.cwd(), "src", "content", locale);
+}
 
-// 모든 포스트 목록을 가져오는 메인 함수
-// content 디렉토리의 MDX 파일들을 스캔하고 메타데이터를 파싱
-export async function listPosts(): Promise<PostListItem[]> {
-  // 콘텐츠 디렉토리의 모든 엔트리를 파일 타입 정보와 함께 읽기
-  // withFileTypes: true로 파일/디렉토리 구분 가능
-  const entries = await fs.readdir(POSTS_DIR, { withFileTypes: true });
-  
-  // MDX 파일만 필터링 - 파일이면서 .mdx 확장자를 가진 것만
-  const mdxFiles = entries.filter((e) => e.isFile() && e.name.endsWith(".mdx"));
-  
+// 로케일 디렉토리의 MDX 파일명 목록을 반환
+// 번역이 아직 없는 로케일은 디렉토리가 비어 있을 수 있으므로 ENOENT를 빈 배열로 처리
+async function readMdxFileNames(locale: Locale): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(postsDir(locale), { withFileTypes: true });
+    // MDX 파일만 필터링 - 파일이면서 .mdx 확장자를 가진 것만
+    return entries
+      .filter((e) => e.isFile() && e.name.endsWith(".mdx"))
+      .map((e) => e.name);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+// 특정 로케일의 모든 포스트 목록을 가져오는 메인 함수
+// 해당 로케일 디렉토리의 MDX 파일들을 스캔하고 메타데이터를 파싱
+export async function listPosts(locale: Locale): Promise<PostListItem[]> {
+  const mdxFiles = await readMdxFileNames(locale);
+
   const posts: PostListItem[] = [];
-  
+
   // 각 MDX 파일을 순회하며 메타데이터 추출
-  for (const file of mdxFiles) {
-    const full = path.join(POSTS_DIR, file.name);
+  for (const fileName of mdxFiles) {
+    const full = path.join(postsDir(locale), fileName);
     
     // 파일 내용을 UTF-8로 읽기
     const raw = await fs.readFile(full, "utf8");
@@ -95,7 +108,7 @@ export async function listPosts(): Promise<PostListItem[]> {
     };
     
     // 파일명에서 확장자를 제거하여 slug 생성
-    posts.push({ slug: file.name.replace(/\.mdx$/, ""), frontMatter: normalized });
+    posts.push({ slug: fileName.replace(/\.mdx$/, ""), frontMatter: normalized });
   }
   
   // 생성일 기준 내림차순 정렬 (최신 포스트가 먼저)
@@ -105,20 +118,36 @@ export async function listPosts(): Promise<PostListItem[]> {
   return posts;
 }
 
-// 모든 포스트의 slug 목록만 가져오는 함수
+// 특정 로케일의 모든 포스트 slug 목록만 가져오는 함수
 // generateStaticParams에서 정적 라우트 생성용으로 사용
-export async function getPostSlugs(): Promise<string[]> {
-  const entries = await fs.readdir(POSTS_DIR, { withFileTypes: true });
-  return entries
-    .filter((e) => e.isFile() && e.name.endsWith(".mdx")) // MDX 파일만 필터링
-    .map((e) => e.name.replace(/\.mdx$/, "")); // 확장자 제거하여 slug 생성
+export async function getPostSlugs(locale: Locale): Promise<string[]> {
+  const mdxFiles = await readMdxFileNames(locale);
+  return mdxFiles.map((name) => name.replace(/\.mdx$/, "")); // 확장자 제거하여 slug 생성
+}
+
+// 특정 slug의 포스트가 해당 로케일에 존재하는지 확인
+async function hasPost(locale: Locale, slug: string): Promise<boolean> {
+  try {
+    await fs.access(path.join(postsDir(locale), `${slug}.mdx`));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// 특정 slug가 번역되어 있는 로케일 목록을 반환
+// hreflang 주석은 양방향이어야 하므로, ko/en 양쪽 페이지가 모두 이 함수를 사용해
+// 동일한 목록을 기준으로 alternates를 생성한다 (대칭성을 구조적으로 보장)
+export async function getAvailableLocales(slug: string): Promise<Locale[]> {
+  const flags = await Promise.all(LOCALES.map((locale) => hasPost(locale, slug)));
+  return LOCALES.filter((_, index) => flags[index]);
 }
 
 // 특정 slug에 해당하는 포스트의 전체 데이터를 가져오는 함수
 // MDX 컴파일과 커스텀 컴포넌트 적용을 포함
-export async function getPostBySlug(slug: string) {
+export async function getPostBySlug(locale: Locale, slug: string) {
   // slug를 이용해 파일 경로 생성
-  const full = path.join(POSTS_DIR, `${slug}.mdx`);
+  const full = path.join(postsDir(locale), `${slug}.mdx`);
   
   // 파일 내용 읽기
   const raw = await fs.readFile(full, "utf8");
@@ -191,8 +220,8 @@ export function extractHeadings(rawContent: string): Heading[] {
   return headings;
 }
 
-export async function getAllTags(): Promise<string[]> {
-  const posts = await listPosts();
+export async function getAllTags(locale: Locale): Promise<string[]> {
+  const posts = await listPosts(locale);
   const tagSet = new Set<string>();
   for (const post of posts) {
     if (post.frontMatter.tags) {
@@ -202,8 +231,11 @@ export async function getAllTags(): Promise<string[]> {
   return Array.from(tagSet).sort();
 }
 
-export async function listPostsByTag(tag: string): Promise<PostListItem[]> {
-  const posts = await listPosts();
+export async function listPostsByTag(
+  locale: Locale,
+  tag: string
+): Promise<PostListItem[]> {
+  const posts = await listPosts(locale);
   return posts.filter((post) => post.frontMatter.tags?.includes(tag) ?? false);
 }
 
@@ -243,9 +275,11 @@ function normalizeCategory(value: unknown): Category {
 
 // 모든 카테고리와 각 카테고리별 포스트 개수를 반환하는 함수
 // 카테고리 목록 페이지에서 사용
-export async function listCategories(): Promise<{ category: Category; count: number }[]> {
+export async function listCategories(
+  locale: Locale
+): Promise<{ category: Category; count: number }[]> {
   // 모든 포스트 목록 가져오기
-  const posts = await listPosts();
+  const posts = await listPosts(locale);
   
   // 카테고리별 포스트 개수를 저장할 Map 생성
   const counts = new Map<Category, number>();
@@ -262,10 +296,13 @@ export async function listCategories(): Promise<{ category: Category; count: num
 
 // 특정 카테고리의 포스트 목록만 필터링하여 반환하는 함수
 // 카테고리별 페이지에서 사용
-export async function listPostsByCategory(category: Category): Promise<PostListItem[]> {
+export async function listPostsByCategory(
+  locale: Locale,
+  category: Category
+): Promise<PostListItem[]> {
   // 전체 포스트 목록에서 해당 카테고리만 필터링
   // listPosts()에서 이미 날짜순 정렬이 되어 있으므로 추가 정렬 불필요
-  const posts = await listPosts();
+  const posts = await listPosts(locale);
   return posts.filter((p) => p.frontMatter.category === category);
 }
 

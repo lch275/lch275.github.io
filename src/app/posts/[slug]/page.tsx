@@ -3,20 +3,21 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getPostBySlug, getPostSlugs, extractHeadings } from "../utils";
 import { SITE_URL, SITE_NAME } from "@/lib/config";
+import { DEFAULT_LOCALE } from "@/lib/i18n";
 import GiscusArea from "@/components/GiscusArea";
 import TableOfContents from "@/components/TableOfContents";
 
 type PageProps = { params: Promise<{ slug: string }> };
 
 export async function generateStaticParams() {
-  const slugs = await getPostSlugs();
+  const slugs = await getPostSlugs(DEFAULT_LOCALE);
   return slugs.map((slug) => ({ slug }));
 }
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { slug } = await params;
   try {
-    const { frontMatter } = await getPostBySlug(slug);
+    const { frontMatter } = await getPostBySlug(DEFAULT_LOCALE, slug);
     const url = `${SITE_URL}/posts/${slug}/`;
     return {
       title: frontMatter.title,
@@ -48,7 +49,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 export default async function PostPage({ params }: PageProps) {
   const { slug } = await params;
   try {
-    const [post] = await Promise.all([getPostBySlug(slug)]);
+    const [post] = await Promise.all([getPostBySlug(DEFAULT_LOCALE, slug)]);
     const headings = extractHeadings(post.rawContent);
 
     const createdDate = new Date(post.frontMatter.createdAt);

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ALL_CATEGORIES, isValidCategory, listPostsByCategory } from "../../posts/utils";
 import PostCard from "@/components/PostCard";
+import { DEFAULT_LOCALE } from "@/lib/i18n";
 
 type PageProps = { params: Promise<{ category: string }> };
 
@@ -20,7 +21,7 @@ export default async function CategoryPage({ params }: PageProps) {
   const { category } = await params;
   if (!isValidCategory(category)) notFound();
 
-  const posts = await listPostsByCategory(category);
+  const posts = await listPostsByCategory(DEFAULT_LOCALE, category);
 
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-12">

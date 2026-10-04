@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { listPosts } from "./posts/utils";
 import PostCard from "@/components/PostCard";
+import { DEFAULT_LOCALE } from "@/lib/i18n";
 
 export default async function Home() {
-  const allPosts = await listPosts();
+  const allPosts = await listPosts(DEFAULT_LOCALE);
   const recentPosts = allPosts.slice(0, 12);
 
   return (

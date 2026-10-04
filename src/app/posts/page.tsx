@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { listPosts } from "./utils";
 import { SITE_NAME } from "@/lib/config";
+import { DEFAULT_LOCALE } from "@/lib/i18n";
 
 export const metadata: Metadata = {
   title: `글 목록 | ${SITE_NAME}`,
@@ -9,7 +10,7 @@ export const metadata: Metadata = {
 };
 
 export default async function PostsPage() {
-  const posts = await listPosts();
+  const posts = await listPosts(DEFAULT_LOCALE);
 
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-12">

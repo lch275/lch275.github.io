@@ -1,12 +1,16 @@
 import type { MetadataRoute } from "next";
 import { SITE_URL } from "@/lib/config";
+import { DEFAULT_LOCALE } from "@/lib/i18n";
 
 export const dynamic = "force-static";
 import { listPosts } from "./posts/utils";
 import { getAllTags } from "./posts/utils";
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const [posts, tags] = await Promise.all([listPosts(), getAllTags()]);
+  const [posts, tags] = await Promise.all([
+    listPosts(DEFAULT_LOCALE),
+    getAllTags(DEFAULT_LOCALE),
+  ]);
 
   const postEntries: MetadataRoute.Sitemap = posts.map((post) => ({
     url: `${SITE_URL}/posts/${post.slug}/`,

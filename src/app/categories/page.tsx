@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { listCategories } from "../posts/utils";
+import { DEFAULT_LOCALE } from "@/lib/i18n";
 
 export default async function CategoriesPage() {
-  const categories = await listCategories();
+  const categories = await listCategories(DEFAULT_LOCALE);
 
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-12">

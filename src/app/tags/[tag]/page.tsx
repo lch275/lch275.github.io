@@ -3,11 +3,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getAllTags, listPostsByTag } from "../../posts/utils";
 import { SITE_NAME } from "@/lib/config";
+import { DEFAULT_LOCALE } from "@/lib/i18n";
 
 type PageProps = { params: Promise<{ tag: string }> };
 
 export async function generateStaticParams() {
-  const tags = await getAllTags();
+  const tags = await getAllTags(DEFAULT_LOCALE);
   return tags.map((tag) => ({ tag }));
 }
 
@@ -21,7 +22,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function TagPage({ params }: PageProps) {
   const { tag } = await params;
-  const posts = await listPostsByTag(tag);
+  const posts = await listPostsByTag(DEFAULT_LOCALE, tag);
 
   if (posts.length === 0) notFound();
 
