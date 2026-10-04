@@ -8,8 +8,15 @@ import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import CookieConsent from "@/components/CookieConsent";
 import LocaleHint from "@/components/LocaleHint";
+import TranslationNotice from "@/components/TranslationNotice";
 import { SITE_NAME } from "@/lib/config";
-import { getDictionary, HTML_LANG, localeUrl, type Locale } from "@/lib/i18n";
+import {
+  DEFAULT_LOCALE,
+  getDictionary,
+  HTML_LANG,
+  localeUrl,
+  type Locale,
+} from "@/lib/i18n";
 import { listAllRoutePaths } from "@/lib/routes";
 
 const notoSansKR = Noto_Sans_KR({
@@ -86,7 +93,15 @@ export default async function BaseLayout({ locale, children }: Props) {
           {dict.skipToContent}
         </a>
         <SiteHeader locale={locale} availablePaths={availablePaths} />
-        <LocaleHint locale={locale} availablePaths={availablePaths} />
+        {/*
+          번역된 페이지에는 번역 고지를, 원문 페이지에는 언어 안내를 보여준다.
+          번역 고지가 이미 원문 링크를 포함하므로 둘을 함께 띄우면 중복이다.
+        */}
+        {locale === DEFAULT_LOCALE ? (
+          <LocaleHint locale={locale} availablePaths={availablePaths} />
+        ) : (
+          <TranslationNotice locale={locale} availablePaths={availablePaths} />
+        )}
         <main id="main-content">{children}</main>
         <SiteFooter />
         <CookieConsent locale={locale} />

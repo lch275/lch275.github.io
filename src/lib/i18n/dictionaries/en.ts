@@ -53,6 +53,12 @@ export const en: Dictionary = {
       `Posts tagged #${tag} on ${siteName}.`,
   },
 
+  translationNotice: {
+    message:
+      "This page was translated by AI (Claude or ChatGPT). The original page is written in Korean.",
+    action: "Read the original",
+  },
+
   localeHint: {
     message: "This page is also available in English.",
     action: "Read in English",
