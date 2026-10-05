@@ -60,6 +60,7 @@ export default async function BaseLayout({ locale, children }: Props) {
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteJsonLd) }}
         />
+        <meta name="google-adsense-account" content="ca-pub-4205928373181286">
         {/*
           동의 전에는 gtag.js 스크립트 자체를 로드하지 않는다(Basic Consent Mode).
           여기서는 dataLayer/gtag 스텁과 기본 동의 상태(전체 거부)만 등록해두고,
