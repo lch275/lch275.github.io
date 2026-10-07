@@ -8,6 +8,7 @@ import {
   pickPreferredLocale,
   switchLocalePath,
   type Locale,
+  withTrailingSlash,
 } from "@/lib/i18n";
 
 const STORAGE_KEY = "locale-hint-dismissed";
@@ -75,7 +76,7 @@ export default function LocaleHint({ locale, availablePaths }: Props) {
           {dict.localeHint.message}{" "}
           {/* 루트 레이아웃이 로케일별로 달라 전체 페이지 이동이 필요하므로 <a>를 쓴다 */}
           <a
-            href={href}
+            href={withTrailingSlash(href)}
             hrefLang={target}
             className="font-medium text-blue-600 dark:text-blue-400 hover:underline"
           >

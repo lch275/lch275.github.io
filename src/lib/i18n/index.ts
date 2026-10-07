@@ -54,14 +54,16 @@ export function localePath(locale: Locale, path = "/"): string {
   return `${prefix}${normalized}` || "/";
 }
 
+// next.config의 trailingSlash: true와 일치하도록 뒤 슬래시를 붙인다
+// next/link는 이 처리를 자동으로 해주지만, 일반 <a>는 그렇지 않아 직접 붙여야 한다
+// (붙이지 않으면 /posts/x → /posts/x/ 리디렉션을 거치는 내부 링크가 된다)
+export function withTrailingSlash(path: string): string {
+  return path.endsWith("/") ? path : `${path}/`;
+}
+
 // canonical·hreflang·사이트맵에 사용하는 절대 URL 생성
-// next.config의 trailingSlash: true와 일치시키기 위해 항상 뒤 슬래시를 붙인다
 export function localeUrl(locale: Locale, path = "/"): string {
-  const withoutTrailing = localePath(locale, path);
-  const withTrailing = withoutTrailing.endsWith("/")
-    ? withoutTrailing
-    : `${withoutTrailing}/`;
-  return `${SITE_URL}${withTrailing}`;
+  return `${SITE_URL}${withTrailingSlash(localePath(locale, path))}`;
 }
 
 // 접두어가 붙는 로케일(기본 로케일 제외)을 경로 앞에서 걷어내기 위한 패턴

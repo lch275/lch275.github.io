@@ -7,6 +7,7 @@ import {
   localePath,
   switchLocalePath,
   type Locale,
+  withTrailingSlash,
 } from "@/lib/i18n";
 
 interface Props {
@@ -37,7 +38,7 @@ export default function TranslationNotice({ locale, availablePaths }: Props) {
         {dict.translationNotice.message}{" "}
         {/* 로케일별로 루트 레이아웃이 달라 전체 페이지 이동이 필요하므로 <a>를 쓴다 */}
         <a
-          href={href}
+          href={withTrailingSlash(href)}
           hrefLang={DEFAULT_LOCALE}
           className="font-medium underline hover:no-underline"
         >

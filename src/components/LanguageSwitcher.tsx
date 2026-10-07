@@ -7,6 +7,7 @@ import {
   LOCALES,
   switchLocalePath,
   type Locale,
+  withTrailingSlash,
 } from "@/lib/i18n";
 
 interface Props {
@@ -33,7 +34,7 @@ export default function LanguageSwitcher({ locale, availablePaths }: Props) {
           // 로케일별로 루트 레이아웃이 달라 전체 페이지 이동이 필요하므로 <a>를 사용한다
           <a
             key={target}
-            href={href}
+            href={withTrailingSlash(href)}
             hrefLang={target}
             lang={target}
             aria-label={getDictionary(locale).nav.switchTo(languageName)}
