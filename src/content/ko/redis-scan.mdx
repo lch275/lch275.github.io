@@ -1,0 +1,422 @@
+---
+title: Spring Cache 어노테이션 뒤에 숨은 KEYS 명령어 — Redis 캐시가 Redis를 멈추게 한 이유와 해결 방법
+createdAt: 2026-10-13
+updatedAt: 2026-10-13
+description: Spring Cache 어노테이션으로 Redis 캐시를 사용할 때 @CacheEvict(allEntries = true)가 내부적으로 KEYS 명령어를 실행해 Redis 전체가 멈추고 로그인 세션 조회까지 실패한 원인을 분석합니다. 싱글 스레드 구조에서 KEYS가 위험한 이유, SCAN 기반 BatchStrategy가 도입된 버전, 낮은 Spring Boot 버전에서 RedisCacheWriter를 커스텀하여 해결한 방법과 클러스터 모드에서의 주의사항을 정리합니다.
+category: backend
+tags:
+  - spring-boot
+  - spring-cache
+  - redis
+  - java
+  - troubleshooting
+---
+
+## 1. 들어가며
+
+Spring 프로젝트는 다양한 어노테이션과 예제를 제공한다. 이러한 어노테이션은 내부 구현을 잘 모르더라도 비즈니스에서 요구하는 기능을 어느 정도 만들 수 있게 도와준다.
+
+문제는 개발자가 내부 구현을 모르는 상황에서 버그가 발생하면, 그 원인을 찾고 서비스를 복구하기 어렵다는 것이다.
+
+이번에 겪은 문제도 그랬다. `@Cacheable`, `@CacheEvict`로 Redis 캐시를 사용하고 있었고, 코드 어디에도 Redis 명령어를 직접 호출하는 부분은 없었다. 그런데 캐시 전체를 무효화하는 로직이 실행되는 순간 Redis 전체가 멈췄고, 같은 Redis를 사용하던 로그인 세션 조회까지 실패하기 시작했다.
+
+원인은 Spring Cache가 추상화해 둔 내부 구현에 있었다. 캐시 전체 삭제 시 `KEYS` 명령어가 사용되고 있었던 것이다.
+
+같은 문제를 겪을 수 있는 사람들을 위해 이 글에서는 다음 내용을 정리한다.
+
+- `@CacheEvict(allEntries = true)`가 `KEYS` 명령어로 이어지는 경로
+- 싱글 스레드 구조에서 `KEYS` 하나가 Redis 전체를 멈추게 하는 이유
+- `SCAN` 기반 삭제를 설정할 수 있게 된 버전
+- 낮은 Spring Boot 버전에서 `RedisCacheWriter`를 커스텀하여 해결한 방법
+- 클러스터 모드에서 달라지는 점
+
+## 2. 문제 확인
+
+### 2.1 캐시 설정
+
+캐시는 Spring Boot의 자동 설정과 어노테이션만으로 구성되어 있었다.
+
+```java
+@Service
+public class ProductService {
+
+    @Cacheable(cacheNames = "product", key = "#id")
+    public Product getProduct(Long id) {
+        return productRepository.findById(id).orElseThrow();
+    }
+
+    // 상품 정보가 일괄 변경되면 캐시 전체를 무효화한다
+    @CacheEvict(cacheNames = "product", allEntries = true)
+    public void refreshAll() {
+        // ...
+    }
+}
+```
+
+`allEntries = true`는 해당 캐시에 속한 모든 엔트리를 삭제하라는 의미다. 개발자 입장에서는 "product 캐시를 비운다"는 선언일 뿐, 이것이 Redis에서 어떤 명령어로 실행되는지는 드러나지 않는다.
+
+### 2.2 장애 현상
+
+캐시 전체 무효화가 실행되는 시점에 다음 현상이 함께 발생했다.
+
+- Redis 응답 지연으로 애플리케이션 전반의 Redis 명령이 timeout
+- Spring Session이 Redis에서 세션을 가져오지 못해 로그인 사용자의 인증이 풀리는 현상
+- 캐시 무효화가 끝난 뒤에는 별다른 조치 없이 정상화
+
+캐시를 비우는 동작이 캐시와 무관한 세션 조회까지 막았다는 점이 핵심 단서였다. 특정 키나 특정 기능의 문제가 아니라, Redis 서버 자체가 그 시간 동안 다른 요청을 처리하지 못했다는 의미다.
+
+### 2.3 SLOWLOG로 확인
+
+Redis의 `SLOWLOG`는 실행 시간이 임계값을 넘은 명령어를 기록한다.
+
+```
+SLOWLOG GET 10
+```
+
+장애 시점의 기록에는 `KEYS product::*` 명령어가 남아 있었다. 애플리케이션 코드에서 직접 호출한 적이 없는 명령어였다.
+
+## 3. 원인 분석 — 어노테이션에서 KEYS까지
+
+Spring Data Redis 2.5.x 소스를 기준으로 호출 경로를 추적한다.
+
+### 3.1 RedisCache.clear()
+
+`@CacheEvict(allEntries = true)`는 `CacheInterceptor`를 거쳐 최종적으로 `Cache.clear()`를 호출한다. Redis 구현체인 `RedisCache`의 `clear()`는 다음과 같다.
+
+```java
+// org.springframework.data.redis.cache.RedisCache
+@Override
+public void clear() {
+
+    // "product::*" 형태의 패턴을 만든다
+    byte[] pattern = conversionService.convert(createCacheKey("*"), byte[].class);
+    cacheWriter.clean(name, pattern);
+}
+```
+
+캐시 이름에 기본 prefix(`product::`)를 붙이고 `*`를 더해 패턴을 만든 뒤, 실제 삭제는 `RedisCacheWriter`에 위임한다.
+
+### 3.2 DefaultRedisCacheWriter.clean()
+
+```java
+// org.springframework.data.redis.cache.DefaultRedisCacheWriter
+@Override
+public void clean(String name, byte[] pattern) {
+
+    execute(name, connection -> {
+
+        boolean wasLocked = false;
+
+        try {
+
+            if (isLockingCacheWriter()) {
+                doLock(name, connection);
+                wasLocked = true;
+            }
+
+            // 패턴에 해당하는 키를 KEYS 명령어로 한 번에 조회한다
+            byte[][] keys = Optional.ofNullable(connection.keys(pattern)).orElse(Collections.emptySet())
+                    .toArray(new byte[0][]);
+
+            if (keys.length > 0) {
+                statistics.incDeletesBy(name, keys.length);
+                connection.del(keys);
+            }
+        } finally {
+
+            if (wasLocked && isLockingCacheWriter()) {
+                doUnlock(name, connection);
+            }
+        }
+
+        return "OK";
+    });
+}
+```
+
+`connection.keys(pattern)`가 바로 Redis의 `KEYS product::*` 명령어다. 어노테이션 한 줄이 내부적으로는 `KEYS`와 `DEL`의 조합으로 실행되고 있었다.
+
+### 3.3 전체 흐름
+
+```
+@CacheEvict(cacheNames = "product", allEntries = true)
+  │
+  ▼
+CacheInterceptor → CacheAspectSupport
+  │
+  └─ RedisCache.clear()
+       │
+       └─ DefaultRedisCacheWriter.clean("product", "product::*")
+            │
+            ├─ KEYS product::*        ← 전체 키스페이스 순회 (Redis 블로킹)
+            │
+            └─ DEL key1 key2 ...      ← 조회된 키 일괄 삭제
+```
+
+## 4. 왜 Redis 전체가 멈추는가
+
+### 4.1 Redis는 명령어를 싱글 스레드로 실행한다
+
+Redis는 하나의 이벤트 루프에서 명령어를 순차적으로 실행한다. Redis 6부터 `io-threads` 옵션으로 네트워크 I/O를 멀티 스레드로 처리할 수 있게 되었지만, **명령어 실행 자체는 여전히 하나의 스레드**에서 이루어진다.
+
+이 구조 덕분에 Redis는 락 없이 원자성을 보장하고, 대부분의 명령어를 매우 빠르게 처리한다. 대신 하나의 명령어가 오래 실행되면 그동안 다른 모든 클라이언트의 명령어는 대기열에서 기다려야 한다.
+
+```
+[Redis 메인 스레드]
+
+  KEYS product::* ████████████████████████████  (전체 키 순회 중)
+  GET spring:session:sessions:abc            ⏳ 대기
+  GET spring:session:sessions:xyz            ⏳ 대기
+  GET product::42                            ⏳ 대기
+  ...
+```
+
+### 4.2 KEYS의 비용은 패턴이 아니라 전체 키 개수에 비례한다
+
+`KEYS`의 시간 복잡도는 O(N)이고, 여기서 N은 **패턴에 매칭되는 키의 개수가 아니라 데이터베이스의 전체 키 개수**다. `product::*`라는 패턴을 주더라도 Redis는 모든 키를 하나씩 확인하며 패턴과 비교한다.
+
+이번 장애에서 이 특성이 문제를 키웠다. 캐시와 세션이 같은 Redis를 사용하고 있었기 때문에, product 캐시 키가 많지 않더라도 **로그인 사용자 수만큼 쌓인 세션 키까지 모두 순회**해야 했다. 사용자가 많은 시간대일수록 캐시 무효화는 더 느려지고, 그만큼 세션 조회가 더 오래 막히는 구조였다.
+
+| 구분                  | KEYS                           | SCAN                                     |
+| --------------------- | ------------------------------ | ---------------------------------------- |
+| 1회 호출 시간 복잡도  | O(N), 전체 키 개수             | O(1), 호출당 일부만 순회                 |
+| 블로킹                | 순회가 끝날 때까지 다른 명령 대기 | 호출 사이에 다른 명령 처리 가능          |
+| 결과                  | 한 번에 전체 반환              | cursor 기반으로 나눠서 반환              |
+| 주의점                | 운영 환경 사용 비권장          | 중복 키 반환 가능, `COUNT`는 힌트일 뿐   |
+
+### 4.3 세션 조회 실패로 이어진 이유
+
+`KEYS`가 실행되는 동안 Spring Session의 세션 조회 명령도 대기열에서 기다린다. 대기 시간이 클라이언트의 command timeout을 넘으면 애플리케이션은 세션을 가져오지 못한 것으로 처리한다. 사용자 입장에서는 로그인되어 있던 상태가 갑자기 풀린 것처럼 보인다.
+
+캐시 장애가 캐시에서 끝나지 않고 인증 장애로 번진 이유는 결국 **같은 Redis 인스턴스, 같은 메인 스레드를 공유**하고 있었기 때문이다.
+
+## 5. 해결 방법
+
+### 5.1 BatchStrategy — Spring Data Redis 2.6부터
+
+Spring Data Redis 2.6(Spring Boot 2.6)부터 `RedisCacheWriter`에 `BatchStrategy`를 지정할 수 있게 되었다. `BatchStrategies`는 두 가지 구현을 제공한다.
+
+| 전략                          | 동작                                                     |
+| ----------------------------- | -------------------------------------------------------- |
+| `BatchStrategies.keys()`      | 기존과 동일하게 `KEYS` 후 `DEL`                          |
+| `BatchStrategies.scan(int)`   | `SCAN`으로 키를 나눠 조회하고, batch 크기 단위로 `DEL`   |
+
+주의할 점은 **기본값이 여전히 `KEYS`라는 것**이다. 최신 버전의 `RedisCacheWriter`도 `BatchStrategy`를 지정하지 않으면 `BatchStrategies.keys()`를 사용한다.
+
+```java
+// org.springframework.data.redis.cache.RedisCacheWriter
+static RedisCacheWriter nonLockingRedisCacheWriter(RedisConnectionFactory connectionFactory) {
+    return nonLockingRedisCacheWriter(connectionFactory, BatchStrategies.keys());
+}
+```
+
+따라서 버전을 올리는 것만으로는 해결되지 않고, 다음과 같이 직접 설정해야 한다.
+
+```java
+@Configuration
+public class CacheConfig {
+
+    @Bean
+    public RedisCacheManagerBuilderCustomizer redisCacheWriterCustomizer(RedisConnectionFactory connectionFactory) {
+        return builder -> builder.cacheWriter(
+                RedisCacheWriter.nonLockingRedisCacheWriter(connectionFactory, BatchStrategies.scan(1000)));
+    }
+}
+```
+
+`RedisCacheManagerBuilderCustomizer`를 사용하면 Spring Boot 자동 설정(`spring.cache.redis.*` 프로퍼티 등)은 그대로 두고 cache writer만 교체할 수 있다.
+
+### 5.2 낮은 버전에서는 RedisCacheWriter를 직접 구현
+
+문제가 된 서비스는 Spring Boot 2.6 미만 버전을 사용하고 있었고, 장애 대응을 위해 Spring Boot 버전을 올리기에는 영향 범위가 너무 컸다. 그래서 `RedisCacheWriter`를 직접 구현하는 방법을 선택했다.
+
+`DefaultRedisCacheWriter`는 package-private 클래스라 상속할 수 없다. 대신 `RedisCacheWriter.nonLockingRedisCacheWriter()`로 기본 구현을 얻은 뒤, `clean()`만 `SCAN` 기반으로 바꾸고 나머지는 위임하는 방식으로 구성했다.
+
+```java
+public class ScanRedisCacheWriter implements RedisCacheWriter {
+
+    private final RedisConnectionFactory connectionFactory;
+    private final RedisCacheWriter delegate;
+    private final int batchSize;
+
+    public ScanRedisCacheWriter(RedisConnectionFactory connectionFactory, int batchSize) {
+        this.connectionFactory = connectionFactory;
+        this.delegate = RedisCacheWriter.nonLockingRedisCacheWriter(connectionFactory);
+        this.batchSize = batchSize;
+    }
+
+    @Override
+    public void clean(String name, byte[] pattern) {
+
+        ScanOptions options = ScanOptions.scanOptions()
+                .match(new String(pattern, StandardCharsets.UTF_8))
+                .count(batchSize)
+                .build();
+
+        RedisConnection connection = connectionFactory.getConnection();
+
+        try (Cursor<byte[]> cursor = connection.scan(options)) {
+
+            List<byte[]> keys = new ArrayList<>(batchSize);
+
+            while (cursor.hasNext()) {
+                keys.add(cursor.next());
+
+                // batch 크기만큼 모이면 삭제한다
+                if (keys.size() >= batchSize) {
+                    connection.del(keys.toArray(new byte[0][]));
+                    keys.clear();
+                }
+            }
+
+            if (!keys.isEmpty()) {
+                connection.del(keys.toArray(new byte[0][]));
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to close scan cursor", e);
+        } finally {
+            connection.close();
+        }
+    }
+
+    // 나머지 메서드는 기본 구현에 위임한다
+    @Override
+    public void put(String name, byte[] key, byte[] value, @Nullable Duration ttl) {
+        delegate.put(name, key, value, ttl);
+    }
+
+    @Override
+    public byte[] get(String name, byte[] key) {
+        return delegate.get(name, key);
+    }
+
+    @Override
+    public byte[] putIfAbsent(String name, byte[] key, byte[] value, @Nullable Duration ttl) {
+        return delegate.putIfAbsent(name, key, value, ttl);
+    }
+
+    @Override
+    public void remove(String name, byte[] key) {
+        delegate.remove(name, key);
+    }
+
+    // Spring Data Redis 2.4부터 추가된 통계 관련 메서드
+    @Override
+    public CacheStatistics getCacheStatistics(String cacheName) {
+        return delegate.getCacheStatistics(cacheName);
+    }
+
+    @Override
+    public void clearStatistics(String name) {
+        delegate.clearStatistics(name);
+    }
+
+    @Override
+    public RedisCacheWriter withStatisticsCollector(CacheStatisticsCollector cacheStatisticsCollector) {
+        return delegate.withStatisticsCollector(cacheStatisticsCollector);
+    }
+}
+```
+
+구현한 writer는 5.1과 같은 방식으로 등록한다. `RedisCacheManagerBuilder.cacheWriter()`는 Spring Data Redis 2.3부터 제공된다.
+
+```java
+@Bean
+public RedisCacheManagerBuilderCustomizer redisCacheWriterCustomizer(RedisConnectionFactory connectionFactory) {
+    return builder -> builder.cacheWriter(new ScanRedisCacheWriter(connectionFactory, 1000));
+}
+```
+
+적용 후의 흐름은 다음과 같다.
+
+```
+@CacheEvict(cacheNames = "product", allEntries = true)
+  │
+  └─ RedisCache.clear()
+       │
+       └─ ScanRedisCacheWriter.clean("product", "product::*")
+            │
+            ├─ SCAN 0 MATCH product::* COUNT 1000      ← 일부만 순회 후 반환
+            ├─ DEL ...                                 ← batch 단위 삭제
+            ├─ SCAN {cursor} MATCH product::* COUNT 1000
+            ├─ ...                                     ← 호출 사이에 세션 조회 처리 가능
+            └─ cursor가 0이 되면 종료
+```
+
+### 5.3 SCAN으로 바꿀 때의 트레이드오프
+
+`SCAN`은 Redis를 오래 붙잡지 않는 대신 다음 특성을 감안해야 한다.
+
+| 항목        | 내용                                                                                       |
+| ----------- | ------------------------------------------------------------------------------------------ |
+| 원자성      | 순회 도중 추가된 키는 삭제되지 않을 수 있다. 캐시 무효화 직후 다시 쌓인 캐시는 남을 수 있다 |
+| 중복 반환   | 같은 키가 여러 번 반환될 수 있지만, `DEL`은 멱등이므로 문제되지 않는다                     |
+| 총 소요 시간 | 왕복 횟수가 늘어나 전체 삭제 완료까지의 시간은 `KEYS`보다 길어질 수 있다                  |
+| batch 크기  | 너무 작으면 왕복이 많아지고, 너무 크면 한 번의 `SCAN`/`DEL`이 다시 길어진다                |
+
+캐시는 원본 데이터가 따로 있는 복사본이기 때문에, 원자성을 일부 포기하더라도 Redis 전체를 멈추지 않는 쪽이 훨씬 중요했다.
+
+## 6. 클러스터 모드에서는
+
+Redis 클러스터를 사용한다면 고려할 부분이 더 있다.
+
+### 6.1 KEYS는 모든 노드에서 실행된다
+
+클러스터 환경에서 Spring Data Redis의 `keys(pattern)`은 모든 노드에 `KEYS`를 보내고 결과를 합친다.
+
+```java
+// org.springframework.data.redis.connection.lettuce.LettuceClusterKeyCommands
+public Set<byte[]> keys(byte[] pattern) {
+
+    Collection<List<byte[]>> keysPerNode = connection.getClusterCommandExecutor()
+            .executeCommandOnAllNodes((LettuceClusterCommandCallback<List<byte[]>>) connection -> connection.keys(pattern))
+            .resultsAsList();
+    // ...
+}
+```
+
+키가 노드에 분산되어 있으니 노드 하나의 순회 비용은 줄어들지만, **모든 노드가 동시에 블로킹**된다. 단일 노드에서는 해당 노드만 멈추던 문제가 클러스터 전체로 퍼지는 것이다.
+
+### 6.2 SCAN은 노드 단위로 순회해야 한다
+
+`SCAN` cursor는 노드마다 독립적이다. 하나의 cursor로 클러스터 전체를 순회할 수 없기 때문에 마스터 노드마다 따로 순회해야 한다.
+
+공식 문서에 따르면 `BatchStrategies.scan()`은 Lettuce 드라이버에서는 클러스터 모드를 지원하지만, **Jedis는 비클러스터 모드에서만 `SCAN`을 지원**한다. 직접 구현하는 경우에는 `RedisClusterConnection`의 노드 단위 API를 사용할 수 있다.
+
+```java
+RedisClusterConnection connection = connectionFactory.getClusterConnection();
+
+for (RedisClusterNode node : connection.clusterGetNodes()) {
+    if (!node.isMaster()) {
+        continue;
+    }
+
+    try (Cursor<byte[]> cursor = connection.scan(node, options)) {
+        // 노드별로 순회하며 삭제
+    }
+}
+```
+
+### 6.3 다중 키 DEL과 슬롯
+
+클러스터에서 여러 키를 한 번에 다루는 명령은 모든 키가 같은 해시 슬롯에 있어야 한다. 같은 노드에서 조회한 키라도 슬롯이 다를 수 있으므로, 직접 구현할 때는 `ClusterSlotHashUtil.calculateSlot()`으로 키를 슬롯별로 묶어서 삭제하는 것이 안전하다.
+
+캐시 prefix에 해시 태그(`{product}::`)를 사용하면 하나의 캐시가 같은 슬롯에 모이므로 다중 키 명령이 단순해진다. 대신 특정 캐시의 부하가 한 노드에 집중되므로 캐시 크기와 트래픽을 함께 고려해야 한다.
+
+## 7. 마무리
+
+"`@CacheEvict(allEntries = true)`는 내부적으로 `KEYS`를 실행하고, 싱글 스레드인 Redis는 그동안 세션 조회를 포함한 모든 요청을 처리하지 못했다."
+
+| 항목                    | 내용                                                         |
+| ----------------------- | ------------------------------------------------------------ |
+| 원인                    | `DefaultRedisCacheWriter.clean()`의 `KEYS` 사용               |
+| 장애 확산 이유          | 싱글 스레드 명령 실행 + 캐시와 세션이 같은 Redis를 공유      |
+| Spring Data Redis 2.6+  | `BatchStrategies.scan()` 지정 (기본값은 여전히 `KEYS`)       |
+| 2.6 미만                | `RedisCacheWriter`를 직접 구현하여 `clean()`을 `SCAN`으로 교체 |
+| 클러스터                | `KEYS`는 전 노드 블로킹, `SCAN`은 노드 단위 순회 필요        |
+
+어노테이션은 Redis 명령어를 감춰 주지만, 그 명령어의 비용까지 없애 주지는 않는다. 직접 `KEYS`를 호출하지 않았다고 해서 운영 Redis에서 `KEYS`가 실행되지 않는다는 보장은 없었다.
+
+인상적이었던 점은 두 가지다. 첫째, `KEYS`의 비용이 패턴이 아니라 전체 키 개수에 비례하기 때문에, 캐시와 무관한 세션 키가 많을수록 캐시 무효화가 느려졌다. 둘째, `BatchStrategy`가 도입된 이후에도 기본값은 `KEYS`로 유지되고 있다. 버전을 올리는 것만으로는 해결되지 않으며, 의식적으로 설정해야 하는 부분이다.
+
+추상화된 기능을 사용할 때는 그 아래에서 어떤 명령어가 실행되는지 한 번쯤 확인해 볼 필요가 있다. 특히 Redis처럼 하나의 명령어가 서버 전체에 영향을 주는 구조에서는 더욱 그렇다.
